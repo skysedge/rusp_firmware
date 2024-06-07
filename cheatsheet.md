@@ -14,3 +14,9 @@ AT+COPS=1,2,310410          manually register with MCC 310 MNC 410 (AT&T)
 AT+CSQ                      signal strength
 AT+CESQ                     signal strength
 
+AT+CMGF=1                   set PDU mode to text (for SMS)
+
+AT+CMGS="+15551112222"      send someone an sms (hit ctrl-z when done)
+
+ATD+15551112222             dial a call
+
