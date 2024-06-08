@@ -38,11 +38,15 @@ int lara_on(
 	HardwareSerial *serial, HardwareSerial *console, unsigned long timeout
 );
 
-// pass lara's serial port through to the console and vice versa
-void lara_passthrough();
+// handle any unsolicited result codes that may have arrived
+// also passes lara's serial port through to the console and vice versa
+void lara_unsolicited(bool *ringing);
 
 // check if in a call, etc.
 lara_activity lara_status();
+
+// answer an incoming call
+int lara_answer();
 
 // hang up on a current call
 int lara_hangup();

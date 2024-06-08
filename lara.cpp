@@ -123,6 +123,10 @@ int lara_on(
 
 	// enable verbose errors
 	lara_at_set("+CMEE=2", 1000);
+	// maximum call volume
+	lara_at_set("+CLVL=6", 1000);
+	// enable codec autoconfiguration on next boot
+	lara_at_set("+UEXTDCONF=0,1", 1000);
 	// enable URCs for registration
 	//lara_at_set("+CREG=2", 1000);
 	// enable URCs for voice call status
@@ -133,9 +137,37 @@ int lara_on(
 }
 
 
-void lara_passthrough()
+void lara_unsolicited(bool *ringing)
 {
-	if (lara.s->available()) lara.cons->write(lara.s->read());
+	// we use a similar strategy to multiexpect() but make our parsing
+	// static because we cannot be busy-waiting here
+	static unsigned indices[] = {0};
+	static unsigned str_count = 1;
+	static char *strs[] = {"RING\r"};
+	if (lara.s->available()) {
+		char c = lara.s->read();
+		// passthrough
+		lara.cons->write(c);
+		// parse
+		for (unsigned i=0; i<str_count; i++) {
+			if (!strs[i][indices[i]]) {
+				switch (i) {
+				case 0:
+					*ringing = true;
+					break;
+				default:
+					break;
+				}
+				// now reset indices
+				for (unsigned j=0; j<str_count; j++) {
+					indices[j] = 0;
+				}
+			}
+			if (c == strs[i][indices[i]]) indices[i] += 1;
+			else indices[i] = 0;
+		}
+	}
+	// passthrough
 	if (lara.cons->available()) lara.s->write(lara.cons->read());
 }
 
@@ -150,6 +182,15 @@ lara_activity lara_status()
 	while (!lara.s->available()) {};
 	lara.s->read();	// clear the \r
 	return ret;
+}
+
+
+int lara_answer()
+{
+	lara.s->write("ATA\r");
+	lara.s->flush();
+	// TODO: error handling
+	return 0;
 }
 
 
