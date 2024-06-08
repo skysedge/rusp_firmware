@@ -15,8 +15,15 @@ AT+CSQ                      signal strength
 AT+CESQ                     signal strength
 
 AT+CMGF=1                   set PDU mode to text (for SMS)
-
 AT+CMGS="+15551112222"      send someone an sms (hit ctrl-z when done)
 
 ATD+15551112222             dial a call
+AT+CHUP                     hang up
+
+AT+CEER                     get last error
+
+AT+UCGED=2                  enable network info
+AT+UCGED?                   get network info
+
+AT+CVMOD=3                  prever VoLTE
 
