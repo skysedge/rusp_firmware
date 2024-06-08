@@ -7,7 +7,7 @@ static struct lara_state lara;
 
 
 // expect lara to send a specific string
-static int expect(char *str, unsigned timeout)
+static int expect(char *str, unsigned long timeout)
 {
 	unsigned i = 0;
 	unsigned long t0 = millis();
@@ -30,7 +30,8 @@ static int expect(char *str, unsigned timeout)
 // @arg indices: array of unsigned zeros that is used to track matching
 // returns 0 if error or the index of the matched string, starting at 1
 static unsigned multiexpect(
-	unsigned str_count, unsigned *indices, char **strs, unsigned timeout
+	unsigned str_count, unsigned *indices, char **strs,
+	unsigned long timeout
 ){
 	unsigned long t0 = millis();
 	do {
@@ -57,7 +58,7 @@ static unsigned multiexpect(
 }
 
 
-int lara_at_set(char *command, unsigned timeout)
+int lara_at_set(char *command, unsigned long timeout)
 {
 	lara.s->write("AT");
 	lara.s->write(command);
@@ -76,7 +77,9 @@ int lara_at_set(char *command, unsigned timeout)
 }
 
 
-int lara_on(HardwareSerial *serial, HardwareSerial *console, unsigned timeout)
+int lara_on(
+	HardwareSerial *serial, HardwareSerial *console, unsigned long timeout
+)
 {
 	if (!*console) return -1;
 	lara.s = serial;
@@ -116,16 +119,17 @@ int lara_on(HardwareSerial *serial, HardwareSerial *console, unsigned timeout)
 	}
 
 	// lara sends us this on startup
-	expect("+PACSP1\r", 20000);
+	expect("+PACSP1\r", timeout);
 
 	// enable verbose errors
 	lara_at_set("+CMEE=2", 1000);
 	// enable URCs for registration
-	lara_at_set("+CREG=2", 1000);
+	//lara_at_set("+CREG=2", 1000);
 	// enable URCs for voice call status
-	lara_at_set("+UCALLSTAT=1", 1000);
+	//lara_at_set("+UCALLSTAT=1", 1000);
 
 	lara.cons->println("LARA: ready");
+	return 0;
 }
 
 
@@ -136,9 +140,46 @@ void lara_passthrough()
 }
 
 
-int lara_off(unsigned timeout)
+lara_activity lara_status()
+{
+	lara.s->write("AT+CPAS\r");
+	lara.s->flush();
+	expect("+CPAS: ", 1000);
+	while (!lara.s->available()) {};
+	lara_activity ret = lara.s->read();
+	while (!lara.s->available()) {};
+	lara.s->read();	// clear the \r
+	return ret;
+}
+
+
+int lara_hangup()
+{
+	lara.s->write("AT+CHUP\r");
+	lara.s->flush();
+	return expect("OK\r", 1000);
+}
+
+
+int lara_dial(char *dial_string)
+{
+	lara.s->write("ATD");
+	// TODO: figure out what to do if the string has no null terminator
+	// (right now we just stop at 32)
+	for (unsigned i=0; i<32; i++) {
+		if (!dial_string[i]) break;
+		lara.s->write(dial_string[i]);
+	}
+	lara.s->write(";\r");
+	lara.s->flush();
+	return expect("OK\r", 1000);
+}
+
+
+int lara_off(unsigned long timeout)
 {
 	lara.s->write("AT+CPWROFF\r");
+	lara.s->flush();
 	unsigned long t0 = millis();
 	while (digitalRead(CELL_PWR_DET) != LOW) {
 		if (millis() - t0 > timeout) {

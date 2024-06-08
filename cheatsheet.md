@@ -17,7 +17,7 @@ AT+CESQ                     signal strength
 AT+CMGF=1                   set PDU mode to text (for SMS)
 AT+CMGS="+15551112222"      send someone an sms (hit ctrl-z when done)
 
-ATD+15551112222             dial a call
+ATD+15551112222;            dial a call
 AT+CHUP                     hang up
 
 AT+CEER                     get last error
