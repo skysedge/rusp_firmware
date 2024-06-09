@@ -135,8 +135,13 @@ char pulse2ascii(char pulse_count)
 }
 
 
+bool kill_switch = true;
+
+
 void setup()
 {
+	Serial.begin(115200);
+
 	pinMode(LED_STAT, OUTPUT);
 	pinMode(LED_FILAMENT, OUTPUT);
 	pinMode(LED_BELL, OUTPUT);
@@ -172,6 +177,15 @@ void setup()
 	pinMode(OFFSIGNAL, INPUT_PULLUP);
 	pinMode(CHG_STAT, INPUT);
 
+  // Update the value of the killswitch.
+	// SW_FN is HIGH by default.
+	kill_switch = digitalRead(SW_FN);
+	// Determine whether to turn off the power.
+	if(kill_switch) {
+		digitalWrite(RELAY_OFF, HIGH);
+		return;
+	}
+
 	digitalWrite(LED_BELL, HIGH);
 
 	// call ISR on rotary switch falling edge (internally pulled up)
@@ -179,8 +193,6 @@ void setup()
 	enableInterrupt(SW_HALL, isr_hall, FALLING);
 	enableInterrupt(SW_HOOK, isr_hook, FALLING);
 	enableInterrupt(SW_C, isr_clear, FALLING);
-
-	Serial.begin(115200);
 
 	digitalWrite(EN_12V, HIGH);
 	digitalWrite(EN_3V3, HIGH);
@@ -202,6 +214,12 @@ void setup()
 
 void loop()
 {
+	// Determine whether to turn off the power.
+	if(kill_switch) {
+		digitalWrite(RELAY_OFF, HIGH);
+		return;
+	}
+
 	if (digitalRead(OFFSIGNAL) == LOW) shutdown();
 	if (digitalRead(SW_ALPHA) == LOW) ringing = true;
 
