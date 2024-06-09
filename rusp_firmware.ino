@@ -1,6 +1,7 @@
 #include <EnableInterrupt.h>
 
 #include "lara.h"
+#include "oled.h"
 
 // PINS #{{{
 #define ENABLE_GxEPD2_GFX 0
@@ -112,6 +113,14 @@ void isr_hook()
 }
 
 
+void isr_clear()
+{
+	dial_buf[0] = 0;
+	dial_idx = 0;
+	oled_clear();
+}
+
+
 char pulse2ascii(char pulse_count)
 {
 	pulse_count -= PULSE_FUDGE;
@@ -147,13 +156,13 @@ void setup()
 	pinMode(SW_ROTARY, INPUT_PULLUP);
 	pinMode(SW_C, INPUT_PULLUP);
 	pinMode(SW_HOOK, INPUT_PULLUP);
- 	pinMode(SW_ALPHA, INPUT_PULLUP);
- 	pinMode(SW_BETA, INPUT_PULLUP);
- 	pinMode(SW_LAMBDA, INPUT_PULLUP);
- 	pinMode(SW_FN, INPUT_PULLUP);
- 	pinMode(SW_LOCAL, INPUT_PULLUP);
- 	pinMode(SW_ALT, INPUT_PULLUP);
- 	pinMode(SW_NONLOCAL, INPUT_PULLUP);
+	pinMode(SW_ALPHA, INPUT_PULLUP);
+	pinMode(SW_BETA, INPUT_PULLUP);
+	pinMode(SW_LAMBDA, INPUT_PULLUP);
+	pinMode(SW_FN, INPUT_PULLUP);
+	pinMode(SW_LOCAL, INPUT_PULLUP);
+	pinMode(SW_ALT, INPUT_PULLUP);
+	pinMode(SW_NONLOCAL, INPUT_PULLUP);
 	pinMode(SW_HALL, INPUT_PULLUP);
 	pinMode(OFFSIGNAL, INPUT_PULLUP);
 	pinMode(CHG_STAT, INPUT);
@@ -164,19 +173,24 @@ void setup()
 	enableInterrupt(SW_ROTARY, isr_rotary, FALLING);
 	enableInterrupt(SW_HALL, isr_hall, FALLING);
 	enableInterrupt(SW_HOOK, isr_hook, FALLING);
+	enableInterrupt(SW_C, isr_clear, FALLING);
 
 	Serial.begin(115200);
-	digitalWrite(LL_OE, HIGH);
-	digitalWrite(EN_3V3, HIGH);
 
-	delay(2000);
+	digitalWrite(EN_12V, HIGH);
+	digitalWrite(EN_3V3, HIGH);
+	digitalWrite(LED_BELL, HIGH);
+	digitalWrite(LL_OE, HIGH);
+
+	oled_init();
+	oled_print("initializing", 0, 30);
 
 	Serial.println("hello! turning LARA on");
 	digitalWrite(LED_STAT, HIGH);
 	lara_on(&Serial1, &Serial, 10000);
 	digitalWrite(LED_STAT, LOW);
 
-	digitalWrite(EN_12V, HIGH);
+	oled_clear();
 	digitalWrite(LED_BELL, LOW);
 }
 
@@ -191,8 +205,9 @@ void loop()
 	unsigned long t = millis();
 
 	if (ringing) {
+		oled_print("incoming call", 0, 30);
 		if (t - ringing_start < 2000) {
-			if (t & 0b01000000) {
+			if (t & 0b00100000) {
 				digitalWrite(RINGER_P, HIGH);
 				digitalWrite(RINGER_N, LOW);
 				digitalWrite(LED_BELL, HIGH);
@@ -207,13 +222,13 @@ void loop()
 	} else {
 		digitalWrite(RINGER_P, LOW);
 		digitalWrite(RINGER_N, LOW);
-		digitalWrite(LED_FILAMENT, LOW);
+		digitalWrite(LED_BELL, LOW);
 		ringing_start = t;
 	}
 
 	// if it's been a while since the last pulse we counted, assume that
 	// number is done being entered
-	if (pulses && t - pulse_last > 600) {
+	if (pulses && t - pulse_last > 500) {
 		disableInterrupt(SW_ROTARY);
 		disableInterrupt(SW_HALL);
 		dial_buf[dial_idx] = pulse2ascii(pulses);
@@ -222,6 +237,7 @@ void loop()
 		dial_idx += 1;
 		dial_buf[dial_idx] = 0;
 		if (dial_idx >= DIAL_BUF_LEN - 1) dial_idx = 0;
+		oled_print(dial_buf, 0, 30);
 		Serial.print("entered: ");
 		Serial.println(dial_buf);
 		enableInterrupt(SW_ROTARY, isr_rotary, FALLING);
@@ -233,14 +249,17 @@ void loop()
 		lara_activity stat = lara_status();
 		switch (stat) {
 		case LARA_RINGING:
+			oled_print("answering", 0, 30);
 			Serial.println("answering");
 			lara_answer();
 			break;
 		case LARA_CALLING:
+			oled_print("hanging up", 0, 30);
 			Serial.println("hanging up");
 			lara_hangup();
 			break;
 		case LARA_READY:
+			oled_print("dialing", 0, 30);
 			Serial.println("dialing");
 			lara_dial(dial_buf);
 			break;
@@ -256,9 +275,11 @@ void loop()
 
 void shutdown()
 {
+	oled_print("shutting down", 0, 30);
 	Serial.println("shutdown called; waiting for cell powerdown");
 	lara_off(5000);
 	Serial.end();
+	digitalWrite(EN_12V, LOW);
 	digitalWrite(RELAY_OFF, HIGH);
 	// POWER KILLED
 }

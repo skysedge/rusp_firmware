@@ -1,5 +1,5 @@
-#ifndef OLED_H
-#define OLED_H
+#ifndef RUSP_OLED_H
+#define RUSP_OLED_H
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -12,12 +12,15 @@
 
 // These bitmaps must be within the project directory.
 // The files in the Adafruit-GFX library will not work.
-#include "./Fonts/FreeSans12pt7b.h"
+//#include "./Fonts/FreeMono12pt7b.h"
 
 // Define the font PROGMEM glyphs array.
-#define GLYPHS FreeSans12pt7bGlyphs
+//#define GLYPHS FreeMono12pt7bGlyphs
 // Define the font PROGMEM bitmap array.
-#define BITMAPS FreeSans12pt7bBitmaps
+//#define BITMAPS FreeMono12pt7bBitmaps
+#include "Fonts/B612Mono_Regular8pt7b.h"
+#define BITMAPS B612Mono_Regular8pt7bBitmaps
+#define GLYPHS B612Mono_Regular8pt7bGlyphs
 
 // Define non-data SPI pins.
 #define CLR_CS     (PORTA &= ~bit(0))  // Set digital 22 (PA0) LOW
