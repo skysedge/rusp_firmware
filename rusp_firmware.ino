@@ -115,14 +115,14 @@ void isr_hook()
 
 void isr_clear()
 {
-  // Decrement the dial index without becoming negative.
+	// Decrement the dial index without becoming negative.
 	dial_idx = dial_idx > 0 ? dial_idx - 1 : 0;
-  // Subtract a letter from the dial buffer.
+	// Subtract a letter from the dial buffer.
 	dial_buf[dial_idx] = 0;
-  // Clear the OLED display.
+	// Clear the OLED display.
 	oled_clear();
-  // Display the phone number again.
-  oled_print(dial_buf, 0, 30);
+	// Display the phone number again.
+	oled_print(dial_buf, 0, 30);
 }
 
 
@@ -188,7 +188,7 @@ void setup()
 	digitalWrite(LL_OE, HIGH);
 
 	oled_init();
-	oled_print("initializing", 0, 30);
+	oled_print("INITIALIZING", 0, 30);
 
 	Serial.println("hello! turning LARA on");
 	digitalWrite(LED_STAT, HIGH);
@@ -210,7 +210,7 @@ void loop()
 	unsigned long t = millis();
 
 	if (ringing) {
-		oled_print("incoming call", 0, 30);
+		oled_print("INCOMING CALL", 0, 30);
 		if (t - ringing_start < 2000) {
 			if (t & 0b00100000) {
 				digitalWrite(RINGER_P, HIGH);
@@ -254,17 +254,17 @@ void loop()
 		lara_activity stat = lara_status();
 		switch (stat) {
 		case LARA_RINGING:
-			oled_print("answering", 0, 30);
+			oled_print("ANSWERING", 0, 30);
 			Serial.println("answering");
 			lara_answer();
 			break;
 		case LARA_CALLING:
-			oled_print("hanging up", 0, 30);
+			oled_print("HANGING UP", 0, 30);
 			Serial.println("hanging up");
 			lara_hangup();
 			break;
 		case LARA_READY:
-			oled_print("dialing", 0, 30);
+			oled_print("DIALING", 0, 30);
 			Serial.println("dialing");
 			lara_dial(dial_buf);
 			break;
@@ -280,7 +280,7 @@ void loop()
 
 void shutdown()
 {
-	oled_print("shutting down", 0, 30);
+	oled_print("GOODBYE", 0, 30);
 	Serial.println("shutdown called; waiting for cell powerdown");
 	lara_off(5000);
 	Serial.end();
