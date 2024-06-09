@@ -115,9 +115,14 @@ void isr_hook()
 
 void isr_clear()
 {
-	dial_buf[0] = 0;
-	dial_idx = 0;
+  // Decrement the dial index without becoming negative.
+	dial_idx = dial_idx > 0 ? dial_idx - 1 : 0;
+  // Subtract a letter from the dial buffer.
+	dial_buf[dial_idx] = 0;
+  // Clear the OLED display.
 	oled_clear();
+  // Display the phone number again.
+  oled_print(dial_buf, 0, 30);
 }
 
 
