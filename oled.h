@@ -8,7 +8,7 @@
 #include <SPI.h>
 
 // Adafruit GFX Library
-#include "gfxfont.h"
+#include <gfxfont.h>
 
 // These bitmaps must be within the project directory.
 // The files in the Adafruit-GFX library will not work.
@@ -18,9 +18,18 @@
 //#define GLYPHS FreeMono12pt7bGlyphs
 // Define the font PROGMEM bitmap array.
 //#define BITMAPS FreeMono12pt7bBitmaps
-#include "Fonts/B612Mono_Regular8pt7b.h"
-#define BITMAPS B612Mono_Regular8pt7bBitmaps
-#define GLYPHS B612Mono_Regular8pt7bGlyphs
+//#include "Fonts/B612Mono_Regular8pt7b.h"
+//#define BITMAPS B612Mono_Regular8pt7bBitmaps
+//#define GLYPHS B612Mono_Regular8pt7bGlyphs
+//#include "Fonts/FreeMono9pt7b.h"
+//#define BITMAPS FreeMono9pt7bBitmaps
+//#define GLYPHS FreeMono9pt7bGlyphs
+//#include "Fonts/B612Mono_Regular8pt7b.h"
+//#define BITMAPS B612Mono_Regular8pt7bBitmaps
+//#define GLYPHS B612Mono_Regular8pt7bGlyphs
+#include "Fonts/IosevkaFixed_Regular12pt7b.h"
+#define BITMAPS IosevkaFixed_Regular12pt7bBitmaps
+#define GLYPHS IosevkaFixed_Regular12pt7bGlyphs
 
 // Define non-data SPI pins.
 #define CLR_CS     (PORTA &= ~bit(0))  // Set digital 22 (PA0) LOW
@@ -34,7 +43,7 @@
 #define EN_12V 33
 
 // Define relevant OLED display properties.
-#define H_RES 128  // Horizontal resolution
+#define H_RES 256  // Horizontal resolution
 #define V_RES 64  // Vertical resolution
 #define MAX_BRIGHT 255  // Maximum pixel brightness
 #define MIN_BRIGHT 0  // Minimum pixel brightness
@@ -52,3 +61,4 @@ void oled_print(char* str, uint16_t curs_x, uint16_t curs_y);
 void oled_scroll(char* str, uint16_t curs_x, uint16_t curs_y, uint16_t init_delay, uint16_t scroll_delay);
 
 #endif
+

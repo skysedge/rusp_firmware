@@ -200,7 +200,7 @@ void setup()
 	digitalWrite(LL_OE, HIGH);
 
 	oled_init();
-	oled_print("INITIALIZING", 0, 30);
+	oled_print("STARTING", 0, 40);
 
 	Serial.println("hello! turning LARA on");
 	digitalWrite(LED_STAT, HIGH);
@@ -228,7 +228,7 @@ void loop()
 	unsigned long t = millis();
 
 	if (ringing) {
-		oled_print("INCOMING CALL", 0, 30);
+		oled_print("INCOMING CALL", 0, 20);
 		if (t - ringing_start < 2000) {
 			if (t & 0b00100000) {
 				digitalWrite(RINGER_P, HIGH);
