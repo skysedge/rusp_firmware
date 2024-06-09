@@ -13,7 +13,11 @@
 // These bitmaps must be within the project directory.
 // The files in the Adafruit-GFX library will not work.
 #include "./Fonts/FreeSans12pt7b.h"
-#include "./Fonts/FreeSans24pt7b.h"
+
+// Define the font PROGMEM glyphs array.
+#define GLYPHS FreeSans12pt7bGlyphs
+// Define the font PROGMEM bitmap array.
+#define BITMAPS FreeSans12pt7bBitmaps
 
 // Define non-data SPI pins.
 #define CLR_CS     (PORTA &= ~bit(0))  // Set digital 22 (PA0) LOW

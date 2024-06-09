@@ -250,9 +250,9 @@ void oled_init() {
  */
 void oled_draw_char(char c, uint16_t curs_x, uint16_t curs_y) {
   // Get glyph's width, height, and start index (in the bitmap) from flash memory.
-  uint32_t start_idx = pgm_read_word(&FreeSans12pt7bGlyphs[c - 32].bitmapOffset); 
-  uint16_t g_width = pgm_read_word(&FreeSans12pt7bGlyphs[c - 32].width);
-  uint16_t g_height = pgm_read_word(&FreeSans12pt7bGlyphs[c - 32].height);
+  uint32_t start_idx = pgm_read_word(&GLYPHS[c - 32].bitmapOffset); 
+  uint16_t g_width = pgm_read_word(&GLYPHS[c - 32].width);
+  uint16_t g_height = pgm_read_word(&GLYPHS[c - 32].height);
 
   // Set the cell area for the glyph.
   set_col_addr(curs_x, curs_x + g_width - 1);
@@ -264,7 +264,7 @@ void oled_draw_char(char c, uint16_t curs_x, uint16_t curs_y) {
   // Let the byte index be the the index of the current byte in the glyph bitmap.
   for (uint32_t byte_idx = start_idx; byte_idx < start_idx + num_bytes; byte_idx++) {
     // Retrieve the next byte from the bitmap.
-    uint8_t byte = pgm_read_byte(&FreeSans12pt7bBitmaps[byte_idx]);
+    uint8_t byte = pgm_read_byte(&BITMAPS[byte_idx]);
 
     // Iterate backwards through the bit indexes.
     for (int8_t bit_idx = 7; bit_idx >= 0; bit_idx--) {
@@ -288,7 +288,7 @@ void oled_draw_str(char* str, uint16_t curs_x, uint16_t curs_y) {
   // Iterate the characters in the string to draw.
   for (int char_idx = 0; char_idx < strlen(str); char_idx++) {
     // Get glyph's width from flash memory.
-    int g_width = pgm_read_word(&FreeSans12pt7bGlyphs[str[char_idx] - 32].width);
+    int g_width = pgm_read_word(&GLYPHS[str[char_idx] - 32].width);
     
     // Check whether the glyph will exceed the horizontal resolution of the display.
     if(curs_x + g_width > H_RES)
@@ -299,7 +299,7 @@ void oled_draw_str(char* str, uint16_t curs_x, uint16_t curs_y) {
     
     // Advance the X cursor according to the width of the space defined in the font.
     // This value considers both the width of the given glyph and the space between glyphs.
-    curs_x = curs_x + pgm_read_byte(&FreeSans12pt7bGlyphs[str[char_idx] - 32].xAdvance);
+    curs_x = curs_x + pgm_read_byte(&GLYPHS[str[char_idx] - 32].xAdvance);
   }
 }
 
@@ -312,8 +312,8 @@ void oled_draw_str(char* str, uint16_t curs_x, uint16_t curs_y) {
  */
 void oled_erase_char(char c, uint16_t curs_x, uint16_t curs_y) {
   // Get the glyph's width and height from flash memory.
-  uint16_t g_width = pgm_read_word(&FreeSans12pt7bGlyphs[c - 32].width);
-  uint16_t g_height = pgm_read_word(&FreeSans12pt7bGlyphs[c - 32].height);
+  uint16_t g_width = pgm_read_word(&GLYPHS[c - 32].width);
+  uint16_t g_height = pgm_read_word(&GLYPHS[c - 32].height);
 
   // Set the cell area for the glyph.
   set_col_addr(curs_x, curs_x + g_width - 1);
@@ -340,7 +340,7 @@ void oled_erase_str(char* str, uint16_t curs_x, uint16_t curs_y) {
   // Iterate the characters in the string to erase.
   for (int char_idx = 0; char_idx < strlen(str); char_idx++) {
     // Get glyph's width from flash memory.
-    int g_width = pgm_read_word(&FreeSans12pt7bGlyphs[str[char_idx] - 32].width);
+    int g_width = pgm_read_word(&GLYPHS[str[char_idx] - 32].width);
     
     // Check whether the glyph will exceed the horizontal resolution of the display.
     if(curs_x + g_width > H_RES)
@@ -351,7 +351,7 @@ void oled_erase_str(char* str, uint16_t curs_x, uint16_t curs_y) {
     
     // Advance the X cursor according to the width of the space defined in the font.
     // This value considers both the width of the given glyph and the space between glyphs.
-    curs_x = curs_x + pgm_read_byte(&FreeSans12pt7bGlyphs[str[char_idx] - 32].xAdvance);
+    curs_x = curs_x + pgm_read_byte(&GLYPHS[str[char_idx] - 32].xAdvance);
   }
 }
 
@@ -365,7 +365,7 @@ void oled_erase_str(char* str, uint16_t curs_x, uint16_t curs_y) {
  * @param curs_x The horizontal offset from the top-left corner at which to print
  * @param curs_y The vertical offset from the top-left corner at which to print 
  */
-void oled_print(char* str, int curs_x, int curs_y) {
+void oled_print(char* str, uint16_t curs_x, uint16_t curs_y) {
   oled_enable();
   oled_clear();
 
