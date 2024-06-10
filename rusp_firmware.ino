@@ -43,6 +43,13 @@
 
 // length of dial buffer (max 255 right now since dial_idx is a char)
 #define DIAL_BUF_LEN 30
+// Define the maximum index in the dial buffer.
+// Subtract one because it is an index.
+// Subtract one because the array represents a null-terminated string.
+#define DIAL_BUF_MAX_IDX 28	
+// Define the minimum index in the dial buffer.
+// This value is three because the area code is hardcoded.
+#define DIAL_BUF_MIN_IDX 3
 // subtracted from pulse count to get number dialed
 #define PULSE_FUDGE 1
 
@@ -116,13 +123,20 @@ void isr_hook()
 void isr_clear()
 {
 	// Decrement the dial index without becoming negative.
-	dial_idx = dial_idx > 0 ? dial_idx - 1 : 0;
+	dial_idx = dial_idx > DIAL_BUF_MIN_IDX ? dial_idx - 1 : DIAL_BUF_MIN_IDX;
 	// Subtract a letter from the dial buffer.
 	dial_buf[dial_idx] = 0;
 	// Clear the OLED display.
 	oled_clear();
-	// Display the phone number again.
-	oled_print(dial_buf, 0, 30);
+
+	if (dial_idx <= DIAL_BUF_MIN_IDX) {
+		// Turn off the OLED.
+		oled_disable();
+	} else {
+		// Display the phone number again.
+		oled_print(dial_buf, 0, 30);
+	}
+
 }
 
 
@@ -177,7 +191,7 @@ void setup()
 	pinMode(OFFSIGNAL, INPUT_PULLUP);
 	pinMode(CHG_STAT, INPUT);
 
-  // Update the value of the killswitch.
+	// Update the value of the killswitch.
 	// SW_FN is HIGH by default.
 	kill_switch = digitalRead(SW_FN);
 	// Determine whether to turn off the power.
@@ -209,6 +223,14 @@ void setup()
 
 	oled_clear();
 	digitalWrite(LED_BELL, LOW);
+
+	// Hardcode the area code.
+	dial_buf[0] = '9';
+	dial_buf[1] = '7';
+	dial_buf[2] = '2';
+	dial_buf[3] = 0;	// Set the null byte
+	// Update the dial index.
+	dial_idx = 3;
 }
 
 
@@ -254,15 +276,23 @@ void loop()
 	if (pulses && t - pulse_last > 500) {
 		disableInterrupt(SW_ROTARY);
 		disableInterrupt(SW_HALL);
-		dial_buf[dial_idx] = pulse2ascii(pulses);
+
+		// Check whether the dial index reached maximum capacity.
+		if (dial_idx < DIAL_BUF_MAX_IDX) {
+			// Get the number the user entered.
+			dial_buf[dial_idx] = pulse2ascii(pulses);
+			// Increment the dial index, and set the next value to the null byte.
+			dial_buf[++dial_idx] = 0;
+			// Print the dial buffer.
+			oled_print(dial_buf, 0, 30);
+			Serial.print("entered: ");
+			Serial.println(dial_buf);
+		}
+
+		// Reset the rotary dial variables.
 		pulsing = false;
 		pulses = 0;
-		dial_idx += 1;
-		dial_buf[dial_idx] = 0;
-		if (dial_idx >= DIAL_BUF_LEN - 1) dial_idx = 0;
-		oled_print(dial_buf, 0, 30);
-		Serial.print("entered: ");
-		Serial.println(dial_buf);
+
 		enableInterrupt(SW_ROTARY, isr_rotary, FALLING);
 		enableInterrupt(SW_HALL, isr_hall, FALLING);
 	}
