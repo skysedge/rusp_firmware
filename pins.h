@@ -1,5 +1,5 @@
-#ifndef RUSP_SD_H
-#define RUSP_SD_H_
+#ifndef RUSP_PINS_H
+#define RUSP_PINS_H_
 
 #define ENABLE_GxEPD2_GFX 0
 #define SW_ROTARY 2

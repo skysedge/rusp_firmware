@@ -185,6 +185,10 @@ void setup()
 	digitalWrite(LED_BELL, HIGH);
 	digitalWrite(LL_OE, HIGH);
 
+	// this needs to be before oled_init because it sets the SPI speed to
+	// very low
+	sd_init(&Serial);
+
 	oled_init();
 	oled_print("STARTING", 0, 40);
 
@@ -192,8 +196,6 @@ void setup()
 	digitalWrite(LED_STAT, HIGH);
 	lara_on(&Serial1, &Serial, 10000);
 	digitalWrite(LED_STAT, LOW);
-
-	sd_init(&Serial);
 
 	oled_clear();
 	digitalWrite(LED_BELL, LOW);
