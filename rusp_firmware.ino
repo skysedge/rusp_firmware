@@ -1,45 +1,9 @@
 #include <EnableInterrupt.h>
 
+#include "pins.h"
 #include "lara.h"
 #include "oled.h"
-
-// PINS #{{{
-#define ENABLE_GxEPD2_GFX 0
-#define SW_ROTARY 2
-#define LED_STAT 47
-#define LED_FILAMENT 46
-#define LED_BELL 4
-#define LED1A 8
-#define LED2A 6
-#define LED2R 16
-#define LED3A 17
-#define LED3R 40
-#define LED4A 42
-#define LED4R A6
-#define LED5A A7
-#define LED5R A8
-#define RINGER_P 21
-#define RINGER_N 20
-#define OFFSIGNAL 27
-#define RELAY_OFF 35
-#define LL_OE 38
-#define EN_3V3 34
-#define EN_12V 33
-#define EN_OUTAMP A15
-#define CELL_ON A0
-#define CHIPSELECT 24
-#define SW_C 15
-#define SW_HOOK 14
-#define SW_ALPHA 10
-#define SW_BETA 12
-#define SW_LAMBDA 11
-#define SW_FN 13
-#define SW_LOCAL 32
-#define SW_ALT 31
-#define SW_NONLOCAL 30
-#define SW_HALL 3
-#define CHG_STAT 44
-// #}}}
+#include "sd.h"
 
 // length of dial buffer (max 255 right now since dial_idx is a char)
 #define DIAL_BUF_LEN 30
@@ -123,7 +87,8 @@ void isr_hook()
 void isr_clear()
 {
 	// Decrement the dial index without becoming negative.
-	dial_idx = dial_idx > DIAL_BUF_MIN_IDX ? dial_idx - 1 : DIAL_BUF_MIN_IDX;
+	if (dial_idx > DIAL_BUF_MIN_IDX) dial_idx -= 1;
+	else dial_idx = DIAL_BUF_MIN_IDX;
 	// Subtract a letter from the dial buffer.
 	dial_buf[dial_idx] = 0;
 	// Clear the OLED display.
@@ -136,7 +101,6 @@ void isr_clear()
 		// Display the phone number again.
 		oled_print(dial_buf, 0, 30);
 	}
-
 }
 
 
@@ -149,17 +113,14 @@ char pulse2ascii(char pulse_count)
 }
 
 
-static bool kill_switch = true;
+// static bool kill_switch = true;
 
 
 void reset_dial_buf() {
-  	// Hardcode the area code.
-	dial_buf[0] = '9';
-	dial_buf[1] = '7';
-	dial_buf[2] = '2';
-	dial_buf[3] = 0;	// Set the null byte
+	// Hardcode the area code.
+	strcpy(dial_buf, sd_PREPEND());
 	// Update the dial index.
-	dial_idx = 3;
+	dial_idx = strlen(sd_PREPEND());
 }
 
 
@@ -232,19 +193,21 @@ void setup()
 	lara_on(&Serial1, &Serial, 10000);
 	digitalWrite(LED_STAT, LOW);
 
+	sd_init(&Serial);
+
 	oled_clear();
 	digitalWrite(LED_BELL, LOW);
 
-  // Reset the dial buffer.
-  reset_dial_buf();
+	// Reset the dial buffer.
+	reset_dial_buf();
 }
 
 
 void loop()
 {
-  // Indicate whether the alternate switch was active.
-  // The value is checked after a switch occurs.
-  static bool was_sw_alt = (digitalRead(SW_ALT) == LOW);
+	// Indicate whether the alternate switch was active.
+	// The value is checked after a switch occurs.
+	static bool was_sw_alt = (digitalRead(SW_ALT) == LOW);
 
 	// // Determine whether to turn off the power.
 	// if(kill_switch) {
@@ -287,46 +250,49 @@ void loop()
 		disableInterrupt(SW_ROTARY);
 		disableInterrupt(SW_HALL);
 
-    if (digitalRead(SW_ALT) == LOW) {
-      // Reset the dial buffer.
-      reset_dial_buf();
+		if (digitalRead(SW_ALT) == LOW) {
+			// Reset the dial buffer.
+			reset_dial_buf();
 
-      // Indicate the mode was previously the alternate switch.
-      was_sw_alt = true;
-      // Get the number the user entered.
-      char contact_idx = pulse2ascii(pulses);
+			// Indicate the mode was previously the alternate
+			// switch.
+			was_sw_alt = true;
+			// Get the number the user entered.
+			char contact_idx = pulse2ascii(pulses);
 
-      // Match the number to the contact list.
-      switch (contact_idx) {
-        case '1':
-          strcpy(dial_buf, "9729376610");
-          oled_print(dial_buf, 0, 30);
-          dial_idx = strlen("9729376610");
-          break;
+			// Match the number to the contact list.
+			switch (contact_idx) {
+				case '1':
+					strcpy(dial_buf, sd_CONTACT1());
+					oled_print(dial_buf, 0, 30);
+					dial_idx = strlen(sd_CONTACT1());
+					break;
 
-        case '2':
-          strcpy(dial_buf, "2148441234");
-          oled_print(dial_buf, 0, 30);
-          dial_idx = strlen("2148441234");
-          break;
+				case '2':
+					strcpy(dial_buf, sd_CONTACT2());
+					oled_print(dial_buf, 0, 30);
+					dial_idx = strlen(sd_CONTACT2());
+					break;
 
-        default:
-          oled_print("NOT FOUND", 0, 30);
-      }
+				default:
+					oled_print("NOT FOUND", 0, 30);
+			}
 
-    // Check whether the dial index reached maximum capacity.
-    } else if (dial_idx < DIAL_BUF_MAX_IDX) {
-      // Check whether the mode was previously the alternative switch.
-      if (was_sw_alt) {
-        // Reset the dial buffer.
-        reset_dial_buf();
-        // The switch has changed modes.
-        was_sw_alt = false;
-      }
+		// Check whether the dial index reached maximum capacity.
+		} else if (dial_idx < DIAL_BUF_MAX_IDX) {
+			// Check whether the mode was previously the alternative
+			// switch.
+			if (was_sw_alt) {
+				// Reset the dial buffer.
+				reset_dial_buf();
+				// The switch has changed modes.
+				was_sw_alt = false;
+			}
 
 			// Get the number the user entered.
 			dial_buf[dial_idx] = pulse2ascii(pulses);
-			// Increment the dial index, and set the next value to the null byte.
+			// Increment the dial index, and set the next value to
+			// the null byte.
 			dial_buf[++dial_idx] = 0;
 			// Print the dial buffer.
 			oled_print(dial_buf, 0, 30);

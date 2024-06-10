@@ -10,6 +10,8 @@
 // Adafruit GFX Library
 #include <gfxfont.h>
 
+#include "pins.h"
+
 // These bitmaps must be within the project directory.
 // The files in the Adafruit-GFX library will not work.
 //#include "./Fonts/FreeMono12pt7b.h"
@@ -38,9 +40,6 @@
 #define SET_RESET  (PORTC |=  bit(0))  // Set digital 37 (PC0) HIGH
 #define CLR_DC     (PORTC &= ~bit(1))  // Set digital 36 (PC1) LOW
 #define SET_DC     (PORTC |=  bit(1))  // Set digital 36 (PC1) HIGH
-
-// Define the 12 V enable pin.
-#define EN_12V 33
 
 // Define relevant OLED display properties.
 #define H_RES 256  // Horizontal resolution

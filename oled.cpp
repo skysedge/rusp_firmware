@@ -192,8 +192,8 @@ void oled_init() {
 	write_cmd(0X12); //  (12H=Unlock,16H=Lock)
 	write_cmd(0XAE); //  Display OFF (sleep mode)
 
-	set_col_addr(0x00, H_RES-1);  // [0, 127]
-	set_row_addr(0x00, V_RES-1);  // [0, 31]
+	set_col_addr(0x00, H_RES - 1);  // [0, 127]
+	set_row_addr(0x00, V_RES - 1);  // [0, 31]
 
 	write_cmd(0X81);  // Set contrast
 	write_cmd(0x2f);
@@ -260,8 +260,8 @@ void oled_draw_char(char c, uint16_t curs_x, uint16_t curs_y) {
 	set_col_addr(curs_x, curs_x + g_width - 1);
 	set_row_addr(curs_y, curs_y + g_height - 1);
 
-	// Calculate the number of bytes in the bitmap.
-	uint32_t num_bytes = (g_width * g_height) / 8;
+	// Calculate the number of bytes in the bitmap (round down).
+	uint32_t num_bytes = g_width * g_height / 8;
 
 	// Let the byte index be the the index of the current byte in the glyph bitmap.
 	for (uint32_t byte_idx = start_idx; byte_idx < start_idx + num_bytes; byte_idx++) {
@@ -274,11 +274,19 @@ void oled_draw_char(char c, uint16_t curs_x, uint16_t curs_y) {
 			bool is_pixel_set = get_bit(byte, bit_idx);
 			// Set the brightness of the pixel according to whether it is set in the bitmap.
 			write_data(is_pixel_set ? MAX_BRIGHT : MIN_BRIGHT);
-if (is_pixel_set) Serial.print("1");
-else Serial.print("0");
 		}
 	}
-Serial.println();
+
+	// Did we round down for num_bytes?
+	if ((g_width * g_height) & 0b0111) {
+		// We still need to write a partial byte, so do that.
+		uint8_t rem = g_width * g_height - 8 * num_bytes;
+		uint8_t byte = pgm_read_byte(&BITMAPS[start_idx + num_bytes]);
+		for (int i = 0; i < rem; i++) {
+			bool is_pixel_set = get_bit(byte, 7 - i);
+			write_data(is_pixel_set ? MAX_BRIGHT : MIN_BRIGHT);
+		}
+	}
 }
 
 /* Draw the string on the OLED display at the given offset.
