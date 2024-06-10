@@ -298,13 +298,13 @@ void loop()
 
       // Match the number to the contact list.
       switch (contact_idx) {
-        case '0':
+        case '1':
           strcpy(dial_buf, "9729376610");
           oled_print(dial_buf, 0, 30);
           dial_idx = strlen("9729376610");
           break;
 
-        case '1':
+        case '2':
           strcpy(dial_buf, "2148441234");
           oled_print(dial_buf, 0, 30);
           dial_idx = strlen("2148441234");
