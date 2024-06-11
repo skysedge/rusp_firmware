@@ -113,9 +113,6 @@ char pulse2ascii(char pulse_count)
 }
 
 
-// static bool kill_switch = true;
-
-
 void reset_dial_buf() {
 	// Hardcode the area code.
 	strcpy(dial_buf, sd_PREPEND());
@@ -163,15 +160,6 @@ void setup()
 	pinMode(OFFSIGNAL, INPUT_PULLUP);
 	pinMode(CHG_STAT, INPUT);
 
-	// // Update the value of the killswitch.
-	// // SW_FN is HIGH by default.
-	// kill_switch = digitalRead(SW_FN);
-	// // Determine whether to turn off the power.
-	// if(kill_switch) {
-	// 	digitalWrite(RELAY_OFF, HIGH);
-	// 	return;
-	// }
-
 	digitalWrite(LED_BELL, HIGH);
 
 	// call ISR on rotary switch falling edge (internally pulled up)
@@ -210,12 +198,6 @@ void loop()
 	// Indicate whether the alternate switch was active.
 	// The value is checked after a switch occurs.
 	static bool was_sw_alt = (digitalRead(SW_ALT) == LOW);
-
-	// // Determine whether to turn off the power.
-	// if(kill_switch) {
-	// 	digitalWrite(RELAY_OFF, HIGH);
-	// 	return;
-	// }
 
 	if (digitalRead(OFFSIGNAL) == LOW) shutdown();
 	if (digitalRead(SW_ALPHA) == LOW) ringing = true;
