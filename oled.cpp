@@ -323,8 +323,8 @@ void oled_draw_str(char* str, uint16_t curs_x, uint16_t curs_y) {
  */
 void oled_erase_char(char c, uint16_t curs_x, uint16_t curs_y) {
   // Get the glyph's width and height from flash memory.
-  uint16_t g_width = pgm_read_word(&FreeSans12pt7bGlyphs[c - 32].width);
-  uint16_t g_height = pgm_read_word(&FreeSans12pt7bGlyphs[c - 32].height);
+  uint16_t g_width = pgm_read_word(&GLYPHS[c - 32].width);
+  uint16_t g_height = pgm_read_word(&GLYPHS[c - 32].height);
 
   // Set the cell area for the glyph.
   set_col_addr(curs_x, curs_x + g_width - 1);
