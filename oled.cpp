@@ -15,9 +15,7 @@
  */
 
 
-/* Migrate to C functions, refactor, prune, and add documentation.
- *
- * CFAL25664C0-021Mx Demonstration Code
+/* CFAL25664C0-021Mx Demonstration Code
  * https://github.com/crystalfontz/CFAL25664C0-021Mx/tree/main
  *
  * Solomon Systech SSD1362: 256 x 64, 16 Gray Scale Dot Matrix High Power OLED/PLED Segment/Common Driver with Controller
@@ -324,40 +322,22 @@ void oled_draw_str(char* str, uint16_t curs_x, uint16_t curs_y) {
  * @param curs_y The vertical offset from the top-left corner at which to start erasing
  */
 void oled_erase_char(char c, uint16_t curs_x, uint16_t curs_y) {
-	// Get glyph's width, height, and start index (in the bitmap) from flash memory.
-	uint16_t start_idx = pgm_read_word(&GLYPHS[c - 32].bitmapOffset);
-	uint8_t g_width = pgm_read_byte(&GLYPHS[c - 32].width);
-	uint8_t g_height = pgm_read_byte(&GLYPHS[c - 32].height);
-	curs_x = ((int16_t) curs_x) + pgm_read_byte(&GLYPHS[c - 32].xOffset);
-	curs_y = ((int16_t) curs_y) + pgm_read_byte(&GLYPHS[c - 32].yOffset);
+  // Get the glyph's width and height from flash memory.
+  uint16_t g_width = pgm_read_word(&FreeSans12pt7bGlyphs[c - 32].width);
+  uint16_t g_height = pgm_read_word(&FreeSans12pt7bGlyphs[c - 32].height);
 
-	// Set the cell area for the glyph.
-	set_col_addr(curs_x, curs_x + g_width - 1);
-	set_row_addr(curs_y, curs_y + g_height - 1);
+  // Set the cell area for the glyph.
+  set_col_addr(curs_x, curs_x + g_width - 1);
+  set_row_addr(curs_y, curs_y + g_height - 1);
 
-	// Calculate the number of bytes in the bitmap (round down).
-	uint32_t num_bytes = g_width * g_height / 8;
+  // Calculate the number of pixels in the cell area.
+  uint32_t num_pixels = g_width * g_height;
 
-	// Let the byte index be the the index of the current byte in the glyph bitmap.
-	for (uint32_t byte_idx = start_idx; byte_idx < start_idx + num_bytes; byte_idx++) {
-		// Retrieve the next byte from the bitmap.
-		uint8_t byte = pgm_read_byte(&BITMAPS[byte_idx]);
-
-		// Iterate backwards through the bit indexes.
-		for (int8_t bit_idx = 7; bit_idx >= 0; bit_idx--) {
-			write_data(MIN_BRIGHT);
-		}
-	}
-
-	// Did we round down for num_bytes?
-	if ((g_width * g_height) & 0b0111) {
-		// We still need to write a partial byte, so do that.
-		uint8_t rem = g_width * g_height - 8 * num_bytes;
-		uint8_t byte = pgm_read_byte(&BITMAPS[start_idx + num_bytes]);
-		for (int i = 0; i < rem; i++) {
-			write_data(MIN_BRIGHT);
-		}
-	}
+  // Let the byte index be the the index of the current byte in the glyph bitmap.
+  for (uint32_t pixel_idx = 0; pixel_idx < num_pixels; pixel_idx++) {
+    // Turn off the pixel.
+    write_data(MIN_BRIGHT);
+  }
 }
 
 
