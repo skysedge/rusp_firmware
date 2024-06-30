@@ -4,12 +4,12 @@
  * https://learn.adafruit.com/creating-custom-symbol-font-for-adafruit-gfx-library/understanding-the-font-specification
  * First/main section of font file contains a large binary bitmap, where the bytes are expressed in hex
  * The latter section of the file is essentially a ciper which describes the location of each glph in the bitmap
- * 	1: index (starting point) in bitmap array
- * 	2: width of glyph
- * 	3: height of glyph
- * 	4: when drawing glyph, pixels to next character. A monospaced font would have this be always the same.
- * 	5: dx, horizontal centering w.r.t. baseline
- * 	6: dY, vertical centering w.r.t. baseline
+ *   1: index (starting point) in bitmap array
+ *   2: width of glyph
+ *   3: height of glyph
+ *   4: when drawing glyph, pixels to next character. A monospaced font would have this be always the same.
+ *   5: dx, horizontal centering w.r.t. baseline
+ *   6: dY, vertical centering w.r.t. baseline
  *
  * Justine Haupt
  */
@@ -33,13 +33,13 @@
 
 // Enable the OLED display.
 void oled_enable() {
-	digitalWrite(EN_12V, HIGH);
+  digitalWrite(EN_12V, HIGH);
 }
 
 
 // Disable the OLED display.
 void oled_disable() {
-	digitalWrite(EN_12V, LOW);
+  digitalWrite(EN_12V, LOW);
 }
 
 
@@ -52,7 +52,7 @@ void oled_disable() {
  * @param bit_idx The index of the bit in the byte
  */
 static bool get_bit(uint8_t byte, uint8_t bit_idx) {
-	return (byte >> bit_idx) & 1;
+  return (byte >> bit_idx) & 1;
 }
 
 
@@ -75,10 +75,10 @@ static bool get_bit(uint8_t byte, uint8_t bit_idx) {
  * @param data Data to write to the LCD command register
  */
 static void write_cmd(uint8_t cmd) {
-	CLR_CS;  // Select the LCD controller.
-	CLR_DC;  // Select the LCD command register.
-	SPI.transfer(cmd);  // Send the command via the SPI.
-	SET_CS;  // Deselect the LCD controller.
+  CLR_CS;  // Select the LCD controller.
+  CLR_DC;  // Select the LCD command register.
+  SPI.transfer(cmd);  // Send the command via the SPI.
+  SET_CS;  // Deselect the LCD controller.
 }
 
 
@@ -101,10 +101,10 @@ static void write_cmd(uint8_t cmd) {
  * @param data Data to write to the LCD data register
  */
 static void write_data(uint8_t data) {
-	SET_DC;  // Select the LCD data register.
-	CLR_CS;  // Select the LCD controller.
-	SPI.transfer(data);  // Send the data via the SPI.
-	SET_CS;  // Deselect the LCD controller.
+  SET_DC;  // Select the LCD data register.
+  CLR_CS;  // Select the LCD controller.
+  SPI.transfer(data);  // Send the data via the SPI.
+  SET_CS;  // Deselect the LCD controller.
 }
 
 
@@ -124,9 +124,9 @@ static void write_data(uint8_t data) {
  * @param end_addr Column end address, inclusive
  */
 static void set_col_addr(uint8_t start_addr, uint8_t end_addr) {
-	write_cmd(0x15);  // 9.1.1 Set Column Address (15h)
-	write_cmd(start_addr);
-	write_cmd(end_addr);
+  write_cmd(0x15);  // 9.1.1 Set Column Address (15h)
+  write_cmd(start_addr);
+  write_cmd(end_addr);
 }
 
 
@@ -145,9 +145,9 @@ static void set_col_addr(uint8_t start_addr, uint8_t end_addr) {
  * @param end_addr Row end address, inclusive
  */
 static void set_row_addr(uint8_t start_addr, uint8_t end_addr) {
-	write_cmd(0x75);  // 9.1.2 Set Row Address (75h)
-	write_cmd(start_addr);
-	write_cmd(end_addr);
+  write_cmd(0x75);  // 9.1.2 Set Row Address (75h)
+  write_cmd(start_addr);
+  write_cmd(end_addr);
 }
 
 
@@ -156,88 +156,88 @@ static void set_row_addr(uint8_t start_addr, uint8_t end_addr) {
 
 // Clear the OLED display.
 void oled_clear() {
-	// Set the address range to the entire display.
-	set_col_addr(0, H_RES - 1);
-	set_row_addr(0, V_RES - 1);
+  // Set the address range to the entire display.
+  set_col_addr(0, H_RES - 1);
+  set_row_addr(0, V_RES - 1);
 
-	// Clear the display by writing the null byte to all pixels.
-	for (uint32_t pixel_idx = 0; pixel_idx < H_RES * V_RES; pixel_idx++) {
-		write_data(MIN_BRIGHT);
-	}
+  // Clear the display by writing the null byte to all pixels.
+  for (uint32_t pixel_idx = 0; pixel_idx < H_RES * V_RES; pixel_idx++) {
+    write_data(MIN_BRIGHT);
+  }
 }
 
 /* TO DO
  *
  */
 void oled_init() {
-	pinMode(EN_12V, OUTPUT);  // Configure 12 V enable pin
-	DDRA |= bit(0);	 // Set port A0 as output
-	DDRC |= bit(0);	 // Set port C0 as output
-	DDRC |= bit(1);	 // Set port C1 as output
+  pinMode(EN_12V, OUTPUT);  // Configure 12 V enable pin
+  DDRA |= bit(0);   // Set port A0 as output
+  DDRC |= bit(0);   // Set port C0 as output
+  DDRC |= bit(1);   // Set port C1 as output
 
-	delay(100);
-	SET_CS;
-	SPI.begin();
-	SPI.beginTransaction(SPISettings(8000000, MSBFIRST, SPI_MODE0));
+  delay(100);
+  SET_CS;
+  SPI.begin();
+  SPI.beginTransaction(SPISettings(8000000, MSBFIRST, SPI_MODE0));
 
-	CLR_RESET;
-	delay(100);
-	SET_RESET;
+  CLR_RESET;
+  delay(100);
+  SET_RESET;
 
-	oled_enable();
+  oled_enable();
 
-	write_cmd(0Xfd); //  Set command lock
-	write_cmd(0X12); //  (12H=Unlock,16H=Lock)
-	write_cmd(0XAE); //  Display OFF (sleep mode)
+  write_cmd(0Xfd); //  Set command lock
+  write_cmd(0X12); //  (12H=Unlock,16H=Lock)
+  write_cmd(0XAE); //  Display OFF (sleep mode)
 
-	set_col_addr(0x00, H_RES - 1);  // [0, 127]
-	set_row_addr(0x00, V_RES - 1);  // [0, 31]
+  set_col_addr(0x00, H_RES - 1);  // [0, 127]
+  set_row_addr(0x00, V_RES - 1);  // [0, 31]
 
-	write_cmd(0X81);  // Set contrast
-	write_cmd(0x2f);
+  write_cmd(0X81);  // Set contrast
+  write_cmd(0x2f);
 
-	write_cmd(0Xa0);  // Set remap
-	write_cmd(0Xc3);
+  write_cmd(0Xa0);  // Set remap
+  write_cmd(0Xc3);
 
-	write_cmd(0Xa1);  // Set display start line
-	write_cmd(0X00);
+  write_cmd(0Xa1);  // Set display start line
+  write_cmd(0X00);
 
-	write_cmd(0Xa2);  // Set display offset
-	write_cmd(0X00);
+  write_cmd(0Xa2);  // Set display offset
+  write_cmd(0X00);
 
-	write_cmd(0Xa4);  //Normal Display
+  write_cmd(0Xa4);  //Normal Display
 
-	write_cmd(0Xa8);  //Set Multiplex Ratio
-	write_cmd(0X3f);
+  write_cmd(0Xa8);  //Set Multiplex Ratio
+  write_cmd(0X3f);
 
-	write_cmd(0Xab);  //Set VDD regulator
-	write_cmd(0X01);  //Regulator Enable
+  write_cmd(0Xab);  //Set VDD regulator
+  write_cmd(0X01);  //Regulator Enable
 
-	write_cmd(0Xad);  //External /Internal IREF Selection
-	write_cmd(0X8E);
+  write_cmd(0Xad);  //External /Internal IREF Selection
+  write_cmd(0X8E);
 
-	write_cmd(0Xb1);  //Set Phase Length
-	write_cmd(0X22);
+  write_cmd(0Xb1);  //Set Phase Length
+  write_cmd(0X22);
 
-	write_cmd(0Xb3);  //Display clock Divider
-	write_cmd(0Xa0);
+  write_cmd(0Xb3);  //Display clock Divider
+  write_cmd(0Xa0);
 
-	write_cmd(0Xb6);  //Set Second precharge Period
-	write_cmd(0X04);
+  write_cmd(0Xb6);  //Set Second precharge Period
+  write_cmd(0X04);
 
-	write_cmd(0Xb9);  //Set Linear LUT
+  write_cmd(0Xb9);  //Set Linear LUT
 
-	write_cmd(0Xbc);  //Set pre-charge voltage level
-	write_cmd(0X10);  //0.5*Vcc
+  write_cmd(0Xbc);  //Set pre-charge voltage level
+  write_cmd(0X10);  //0.5*Vcc
 
-	write_cmd(0Xbd);  // Pre-Charge voltage capacitor Selection
-	write_cmd(0X01);
+  write_cmd(0Xbd);  // Pre-Charge voltage capacitor Selection
+  write_cmd(0X01);
 
-	write_cmd(0Xbe);  // Set COM Deselect Voltage Level
-	write_cmd(0X07);  // 0.82 * Vcc
+  write_cmd(0Xbe);  // Set COM Deselect Voltage Level
+  write_cmd(0X07);  // 0.82 * Vcc
 
-	oled_clear();		 // Clear Screen
-	write_cmd(0Xaf); // Display ON
+  oled_clear();     // Clear Screen
+  write_cmd(0Xaf); // Display ON
 }
 
 /* Draw the character on the OLED display at the given offset.
@@ -395,22 +395,22 @@ void oled_erase_char(char c, uint16_t curs_x, uint16_t curs_y) {
  * @param curs_y The vertical offset from the top-left corner at which to start erasing
  */
 void oled_erase_str(char* str, uint16_t curs_x, uint16_t curs_y) {
-	// Iterate the characters in the string to erase.
-	for (int char_idx = 0; char_idx < strlen(str); char_idx++) {
-		// Get glyph's width from flash memory.
-		uint8_t g_width = pgm_read_byte(&GLYPHS[str[char_idx] - 32].width);
+  // Iterate the characters in the string to erase.
+  for (int char_idx = 0; char_idx < strlen(str); char_idx++) {
+    // Get glyph's width from flash memory.
+    uint8_t g_width = pgm_read_byte(&GLYPHS[str[char_idx] - 32].width);
 
-		// Check whether the glyph will exceed the horizontal resolution of the display.
-		if(curs_x + g_width > H_RES)
-			break;
+    // Check whether the glyph will exceed the horizontal resolution of the display.
+    if(curs_x + g_width > H_RES)
+      break;
 
-		// Erase the glyph from the display.
-		oled_erase_char(str[char_idx], curs_x, curs_y);
+    // Erase the glyph from the display.
+    oled_erase_char(str[char_idx], curs_x, curs_y);
 
-		// Advance the X cursor according to the width of the space defined in the font.
-		// This value considers both the width of the given glyph and the space between glyphs.
-		curs_x = curs_x + pgm_read_byte(&GLYPHS[str[char_idx] - 32].xAdvance);
-	}
+    // Advance the X cursor according to the width of the space defined in the font.
+    // This value considers both the width of the given glyph and the space between glyphs.
+    curs_x = curs_x + pgm_read_byte(&GLYPHS[str[char_idx] - 32].xAdvance);
+  }
 }
 
 
@@ -424,11 +424,11 @@ void oled_erase_str(char* str, uint16_t curs_x, uint16_t curs_y) {
  * @param curs_y The vertical offset from the top-left corner at which to print
  */
 void oled_print(char* str, uint16_t curs_x, uint16_t curs_y) {
-	oled_enable();
-	oled_clear();
+  oled_enable();
+  oled_clear();
 
-	// Draw the string on the display.
-	oled_draw_str(str, curs_x, curs_y);
+  // Draw the string on the display.
+  oled_draw_str(str, curs_x, curs_y);
 }
 
 
@@ -443,20 +443,20 @@ void oled_print(char* str, uint16_t curs_x, uint16_t curs_y) {
  * @param scroll_delay The delay to wait between scrolling updates
  */
 void oled_scroll(char* str, uint16_t curs_x, uint16_t curs_y, uint16_t init_delay, uint16_t scroll_delay) {
-	oled_enable();
-	oled_clear();
+  oled_enable();
+  oled_clear();
 
-	// Draw the string, wait for the initial delay, and then erase the string.
-	oled_draw_str(str, curs_x, curs_y);
-	delay(init_delay);
-	oled_erase_str(str, curs_x, curs_y);
+  // Draw the string, wait for the initial delay, and then erase the string.
+  oled_draw_str(str, curs_x, curs_y);
+  delay(init_delay);
+  oled_erase_str(str, curs_x, curs_y);
 
-	// Iterate the characters in the string to scroll across the screen.
-	for (uint16_t char_idx = 1; char_idx < strlen(str); char_idx++) {
-		// Draw the string, wait for the scroll delay, and then erase the string.
-		oled_draw_str(str + char_idx, curs_x, curs_y);
-		delay(scroll_delay);
-		oled_erase_str(str + char_idx, curs_x, curs_y);
-	}
+  // Iterate the characters in the string to scroll across the screen.
+  for (uint16_t char_idx = 1; char_idx < strlen(str); char_idx++) {
+    // Draw the string, wait for the scroll delay, and then erase the string.
+    oled_draw_str(str + char_idx, curs_x, curs_y);
+    delay(scroll_delay);
+    oled_erase_str(str + char_idx, curs_x, curs_y);
+  }
 }
 
