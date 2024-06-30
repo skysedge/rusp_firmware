@@ -1,3 +1,7 @@
+LARA commands cheatsheet
+========================
+
+```
 AT+CFUN=0                   power off
 AT+CFUN=1                   power on
 AT+CFUN=16                  silent reset with reset of SIM card
@@ -26,4 +30,5 @@ AT+UCGED=2                  enable network info
 AT+UCGED?                   get network info
 
 AT+CVMOD=3                  prever VoLTE
+```
 
