@@ -247,44 +247,87 @@ void oled_init() {
  * @param curs_y The vertical offset from the top-left corner at which to start drawing
  */
 void oled_draw_char(char c, uint16_t curs_x, uint16_t curs_y) {
-	// Get glyph's width, height, and start index (in the bitmap) from flash memory.
-	uint16_t start_idx = pgm_read_word(&GLYPHS[c - 32].bitmapOffset);
-	uint8_t g_width = pgm_read_byte(&GLYPHS[c - 32].width);
-	uint8_t g_height = pgm_read_byte(&GLYPHS[c - 32].height);
-	curs_x = ((int16_t) curs_x) + pgm_read_byte(&GLYPHS[c - 32].xOffset);
-	curs_y = ((int16_t) curs_y) + pgm_read_byte(&GLYPHS[c - 32].yOffset);
+  // The glyph's width, height, and start index (in the bitmap) are stored in flash memory.
+  uint16_t start_idx = pgm_read_word(&GLYPHS[c - 32].bitmapOffset);
+  uint8_t g_width = pgm_read_byte(&GLYPHS[c - 32].width);
+  uint8_t g_height = pgm_read_byte(&GLYPHS[c - 32].height);
 
-	// Set the cell area for the glyph.
-	set_col_addr(curs_x, curs_x + g_width - 1);
-	set_row_addr(curs_y, curs_y + g_height - 1);
+  // Set the cell area for the glyph.
+  // Each pixel in the cell area is a nibble in GDDRAM.
+  // Subtract one because the interval passed to the OLED driver is closed.
+  set_col_addr(curs_x, curs_x + (g_width >> 1) + (g_width & 0x01) - 1);
+  set_row_addr(curs_y, curs_y + g_height - 1);
 
-	// Calculate the number of bytes in the bitmap (round down).
-	uint32_t num_bytes = g_width * g_height / 8;
+  uint16_t g_pixel_idx = 0;  // Glyph Pixel Index
+  uint16_t g_pixels = (g_width * g_height);  // Number of Glyph Pixels
+  
+  // Define the next pixel on the OLED display to skip.
+  uint16_t next_skip_idx = g_pixel_idx + g_width;
+  // The GDDRAM is byte-addressable, so two pixels must be written at once.
+  // If the glyph has an odd width, the write loop will need to periodically skip a pixel on the OLED display.
+  bool is_odd_width = (g_width & 0x01) == 1;
+  // Define a write buffer for two pixels on the OLED display.
+  uint8_t buf = 0x00;
+  uint8_t buf_size = 0;
+  uint8_t buf_capacity = 2;
 
-	// Let the byte index be the the index of the current byte in the glyph bitmap.
-	for (uint32_t byte_idx = start_idx; byte_idx < start_idx + num_bytes; byte_idx++) {
-		// Retrieve the next byte from the bitmap.
-		uint8_t byte = pgm_read_byte(&BITMAPS[byte_idx]);
+  // Iterate the bytes in the bitmap indefinitely.
+  while (true) {
+    // Extract the next byte in the bitmap.
+    uint8_t byte = pgm_read_byte(&BITMAPS[start_idx++]);
 
-		// Iterate backwards through the bit indexes.
-		for (int8_t bit_idx = 7; bit_idx >= 0; bit_idx--) {
-			// Extract the bit at the given index.
-			bool is_pixel_set = get_bit(byte, bit_idx);
-			// Set the brightness of the pixel according to whether it is set in the bitmap.
-			write_data(is_pixel_set ? MAX_BRIGHT : MIN_BRIGHT);
-		}
-	}
+    // Iterate the bits in the byte.
+    for (uint8_t bit_idx = 0; bit_idx < 8; bit_idx++) {
+      // Rotate the buffer to allocate space for the next pixel.
+      // It is assumed the pixel is set to the minimum intensity.
+      buf = buf << 4;
+      buf_size += 1;
 
-	// Did we round down for num_bytes?
-	if ((g_width * g_height) & 0b0111) {
-		// We still need to write a partial byte, so do that.
-		uint8_t rem = g_width * g_height - 8 * num_bytes;
-		uint8_t byte = pgm_read_byte(&BITMAPS[start_idx + num_bytes]);
-		for (int i = 0; i < rem; i++) {
-			bool is_pixel_set = get_bit(byte, 7 - i);
-			write_data(is_pixel_set ? MAX_BRIGHT : MIN_BRIGHT);
-		}
-	}
+      // Check whether the the next pixel on the OLED display should be skipped.
+      if (is_odd_width && g_pixel_idx == next_skip_idx) {
+        // The next bit in the bitmap is associated with the next row.
+        bit_idx--;
+        // Set the next pixel to skip on the OLED display.
+        next_skip_idx = g_pixel_idx + g_width;
+
+      } else {
+        // Check whether the pixel is set in the glyph bitmap.
+        if (((byte << bit_idx) & 0x80) == 0x80) {
+          // Set the pixel to the maximum intensity on the OLED display.
+          buf |= 0x0F;
+        }
+      
+        g_pixel_idx++;
+      }
+
+      // Check whether the buffer is full.
+      if (buf_size == buf_capacity) {
+        // Flush the buffer.
+        write_data(buf);
+        // Reset the buffer.
+        buf = 0;
+        buf_size = 0;
+      }
+
+      // Exit the function when the glyph cell area has been iterated.
+      if (g_pixel_idx >= g_pixels) {
+        // Check whether an extra pixel is required on the OLED display.
+        if (is_odd_width && g_pixel_idx == next_skip_idx) {
+          // Rotate the buffer to allocate space for the next pixel.
+          // It is assumed the pixel is set to the minimum intensity.
+          buf = buf << 4;
+          buf_size += 1;
+        }
+
+        // Flush the buffer if it is not empty.
+        if (buf_size) {
+          write_data(buf);
+        }
+
+        return;
+      }
+    }
+  }
 }
 
 /* Draw the string on the OLED display at the given offset.
@@ -292,26 +335,30 @@ void oled_draw_char(char c, uint16_t curs_x, uint16_t curs_y) {
  * The function will truncate the string if it exceeds the horizontal resolution.
  *
  * @param str The string to draw
- * @param curs_x The horizontal offset from the top-left corner at which to start drawing
- * @param curs_y The vertical offset from the top-left corner at which to start drawing
+ * @param curs_x The horizontal offset from the upper-left corner at which to start drawing
+ * @param curs_y The vertical offset from the upper-left corner at which to start drawing
  */
 void oled_draw_str(char* str, uint16_t curs_x, uint16_t curs_y) {
-	// Iterate the characters in the string to draw.
-	for (int char_idx = 0; char_idx < strlen(str); char_idx++) {
-		// Get glyph's width from flash memory.
-		uint8_t g_width = pgm_read_byte(&GLYPHS[str[char_idx] - 32].width);
+  // Iterate the characters in the string to draw.
+  for (int char_idx = 0; char_idx < strlen(str); char_idx++) {
+    // // Get glyph's width from flash memory.
+    // uint8_t g_width = pgm_read_byte(&GLYPHS[str[char_idx] - 32].width);
 
-		// Check whether the glyph will exceed the horizontal resolution of the display.
-		if(curs_x + g_width > H_RES)
-			break;
+    // // Check whether the glyph will exceed the horizontal resolution of the display.
+    // if(curs_x + g_width > H_RES)
+    //   break;
 
-		// Draw the glyph on the display.
-		oled_draw_char(str[char_idx], curs_x, curs_y);
+    // Draw the glyph on the display.
+    oled_draw_char(str[char_idx], curs_x, curs_y);
 
-		// Advance the X cursor according to the width of the space defined in the font.
-		// This value considers both the width of the given glyph and the space between glyphs.
-		curs_x = curs_x + pgm_read_byte(&GLYPHS[str[char_idx] - 32].xAdvance);
-	}
+    // Advance the X cursor according to the width of the space defined in the font.
+    // This value considers both the width of the given glyph and the space between glyphs.
+    uint8_t x_advance = pgm_read_byte(&GLYPHS[str[char_idx] - 32].xAdvance);
+
+    // Each pixel corresponds to a nibble in GDDRAM, so modular arithmetic must be performed 
+    // to properly advance the X cursor, which can be implemented using bitwise operations.
+    curs_x = curs_x + (x_advance >> 1) + (x_advance & 0x01);
+  }
 }
 
 
