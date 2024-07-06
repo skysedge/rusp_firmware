@@ -5,17 +5,27 @@
 #include "oled.h"
 #include "sd.h"
 
-// length of dial buffer (max 255 right now since dial_idx is a char)
+// length of dial buffer (max 255 right now since dial_idx is unsigned char)
 #define DIAL_BUF_LEN 30
-// Define the maximum index in the dial buffer.
-// Subtract one because it is an index.
-// Subtract one because the array represents a null-terminated string.
-#define DIAL_BUF_MAX_IDX 28
-// Define the minimum index in the dial buffer.
-// This value is three because the area code is hardcoded.
-#define DIAL_BUF_MIN_IDX 3
 // subtracted from pulse count to get number dialed
 #define PULSE_FUDGE 1
+// ms to debounce rotary switch by
+#define ROTARY_DEBOUNCE_MS 30
+// ms after no pulses have been received when we decide the number is done
+#define PULSES_DONE_MS 500
+
+// https://en.wikipedia.org/wiki/X_macro
+#define FOR_CONTACTS(DO) \
+	DO('1', CONTACT1) \
+	DO('2', CONTACT2) \
+	DO('3', CONTACT3) \
+	DO('4', CONTACT4) \
+	DO('5', CONTACT5) \
+	DO('6', CONTACT6) \
+	DO('7', CONTACT7) \
+	DO('8', CONTACT8) \
+	DO('9', CONTACT9) \
+	DO('0', CONTACT0)
 
 // ugly global variables
 // should we be counting pulses?
@@ -27,7 +37,7 @@ unsigned long pulse_last = 0;
 // buffer to store the phone number (or other thing) being dialed
 char dial_buf[DIAL_BUF_LEN];
 // index of the dial string we're on
-char dial_idx = 0;
+unsigned char dial_idx = 0;
 // whether or not the hook was recently pressed
 // TODO: i tried just putting all the hook-handling code in the ISR but somehow
 // the chip got mad at me
@@ -38,6 +48,8 @@ unsigned long hook_last = 0;
 bool ringing = false;
 // when did ringing start
 unsigned long ringing_start = 0;
+// one of SW_ALT, SW_LOCAL, SW_NONLOCAL (or 0 for uninitialized)
+int prev_mode = 0;
 
 
 // Interrupt Service Routines for the rotary dial's "pulse" switch, which is a
@@ -48,7 +60,7 @@ void isr_rotary()
 	if (!pulsing) return;
 	// debounce
 	unsigned long pulse_cur = millis();
-	if (pulse_cur - pulse_last > 30) {
+	if (pulse_cur - pulse_last > ROTARY_DEBOUNCE_MS) {
 		digitalWrite(LED_STAT, HIGH);
 		digitalWrite(LED5A, HIGH);
 		digitalWrite(LED5R, HIGH);
@@ -86,21 +98,16 @@ void isr_hook()
 
 void isr_clear()
 {
-	// Decrement the dial index without becoming negative.
-	if (dial_idx > DIAL_BUF_MIN_IDX) dial_idx -= 1;
-	else dial_idx = DIAL_BUF_MIN_IDX;
-	// Subtract a letter from the dial buffer.
+	// if in local mode, refuse to delete into the prepend
+	if (prev_mode == SW_LOCAL && dial_idx <= strlen(sd_PREPEND()))
+		return;
+	// Decrement the dial index without underflow.
+	if (dial_idx > 0) dial_idx -= 1;
+	else dial_idx = 0;
+	// Null-terminate the dial buffer.
 	dial_buf[dial_idx] = 0;
-	// Clear the OLED display.
-	oled_clear();
-
-	if (dial_idx <= DIAL_BUF_MIN_IDX) {
-		// Turn off the OLED.
-		oled_disable();
-	} else {
-		// Display the phone number again.
-		oled_print(dial_buf, 0, 30);
-	}
+	// Print the new dial buffer.
+	oled_print(dial_buf, 0, 30);
 }
 
 
@@ -110,14 +117,6 @@ char pulse2ascii(char pulse_count)
 	if (pulse_count == 10) pulse_count = 0;
 	if ((unsigned char)pulse_count < 10) return pulse_count + 0x30;
 	else return '?';
-}
-
-
-void reset_dial_buf() {
-	// Hardcode the area code.
-	strcpy(dial_buf, sd_PREPEND());
-	// Update the dial index.
-	dial_idx = strlen(sd_PREPEND());
 }
 
 
@@ -187,24 +186,31 @@ void setup()
 
 	oled_clear();
 	digitalWrite(LED_BELL, LOW);
-
-	// Reset the dial buffer.
-	reset_dial_buf();
 }
 
 
 void loop()
 {
-	// Indicate whether the alternate switch was active.
-	// The value is checked after a switch occurs.
-	static bool was_sw_alt = (digitalRead(SW_ALT) == LOW);
+	unsigned long t = millis();
 
 	if (digitalRead(OFFSIGNAL) == LOW) shutdown();
+	// TODO: this is for debug purposes
 	if (digitalRead(SW_ALPHA) == LOW) ringing = true;
 
-	lara_unsolicited(&ringing);
+	// figure out which throw the 1p3t switch is on
+	int cur_mode;
+	if (digitalRead(SW_ALT) == LOW) cur_mode = SW_ALT;
+	else if (digitalRead(SW_LOCAL) == LOW) cur_mode = SW_LOCAL;
+	else cur_mode = SW_NONLOCAL;
+	if (cur_mode != prev_mode) {
+		// clear dial buffer if switched to new mode
+		dial_idx = 0;
+		dial_buf[dial_idx] = 0;
+		prev_mode = cur_mode;
+		oled_clear();
+	}
 
-	unsigned long t = millis();
+	lara_unsolicited(&ringing);
 
 	if (ringing) {
 		oled_print("INCOMING CALL", 0, 20);
@@ -230,49 +236,36 @@ void loop()
 
 	// if it's been a while since the last pulse we counted, assume that
 	// number is done being entered
-	if (pulses && t - pulse_last > 500) {
+	if (pulses && t - pulse_last > PULSES_DONE_MS) {
 		disableInterrupt(SW_ROTARY);
 		disableInterrupt(SW_HALL);
 
+		// alt (contacts) mode
 		if (digitalRead(SW_ALT) == LOW) {
-			// Reset the dial buffer.
-			reset_dial_buf();
-
-			// Indicate the mode was previously the alternate
-			// switch.
-			was_sw_alt = true;
 			// Get the number the user entered.
 			char contact_idx = pulse2ascii(pulses);
 
 			// Match the number to the contact list.
 			switch (contact_idx) {
-				case '1':
-					strcpy(dial_buf, sd_CONTACT1());
-					oled_print(dial_buf, 0, 30);
-					dial_idx = strlen(sd_CONTACT1());
-					break;
-
-				case '2':
-					strcpy(dial_buf, sd_CONTACT2());
-					oled_print(dial_buf, 0, 30);
-					dial_idx = strlen(sd_CONTACT2());
-					break;
-
-				default:
-					oled_print("NOT FOUND", 0, 30);
+			#define CASE_CONTACT(c, f) \
+			case c: \
+				strcpy(dial_buf, sd_##f()); \
+				oled_print(dial_buf, 0, 30); \
+				dial_idx = strlen(sd_##f()); \
+				break;
+			FOR_CONTACTS(CASE_CONTACT)
+			default:
+				oled_print("NOT FOUND", 0, 30);
 			}
-
-		// Check whether the dial index reached maximum capacity.
-		} else if (dial_idx < DIAL_BUF_MAX_IDX) {
-			// Check whether the mode was previously the alternative
-			// switch.
-			if (was_sw_alt) {
-				// Reset the dial buffer.
-				reset_dial_buf();
-				// The switch has changed modes.
-				was_sw_alt = false;
+		// Check whether the dial index is below maximum capacity.
+		} else if (dial_idx < DIAL_BUF_LEN - 1) {
+			// first digit in local (prepend) mode
+			if (digitalRead(SW_LOCAL) == LOW
+			&& dial_idx < strlen(sd_PREPEND())) {
+				strcpy(dial_buf, sd_PREPEND());
+				oled_print(dial_buf, 0, 30);
+				dial_idx = strlen(sd_PREPEND());
 			}
-
 			// Get the number the user entered.
 			dial_buf[dial_idx] = pulse2ascii(pulses);
 			// Increment the dial index, and set the next value to

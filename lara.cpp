@@ -137,6 +137,7 @@ int lara_on(
 }
 
 
+// handle URCs and also serial passthrough
 void lara_unsolicited(bool *ringing)
 {
 	// we use a similar strategy to multiexpect() but make our parsing
