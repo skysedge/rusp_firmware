@@ -2,7 +2,7 @@
 #BAUD ?= 115200
 #BOARD_OPTS ?= clock=16MHz_external,baudrate=${BAUD}
 BOARD ?= MegaCore:avr:2560
-BAUD ?= 9600
+BAUD ?= 115200
 BOARD_OPTS ?= clock=7_3728MHz_external,baudrate=${BAUD}
 ARDUINO_PACKAGES ?= ${HOME}/.arduino15/packages
 U2_FW_DIR ?= ${ARDUINO_PACKAGES}/arduino/hardware/avr/1.8.6/firmwares/atmegaxxu2

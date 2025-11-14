@@ -253,6 +253,9 @@ void oled_draw_char(char c, uint16_t curs_x, uint16_t curs_y) {
 	uint16_t start_idx = pgm_read_word(&GLYPHS[c - 32].bitmapOffset);
 	uint8_t g_width = pgm_read_byte(&GLYPHS[c - 32].width);
 	uint8_t g_height = pgm_read_byte(&GLYPHS[c - 32].height);
+	curs_x += (int8_t)pgm_read_byte(&GLYPHS[c - 32].xOffset);
+	// TODO: this can go negative
+	curs_y += (int8_t)pgm_read_byte(&GLYPHS[c - 32].yOffset);
 
 	// Set the cell area for the glyph.
 	// Each pixel in the cell area is a nibble in GDDRAM.
@@ -262,7 +265,7 @@ void oled_draw_char(char c, uint16_t curs_x, uint16_t curs_y) {
 
 	uint16_t g_pixel_idx = 0;	// Glyph Pixel Index
 	uint16_t g_pixels = (g_width * g_height);	// Number of Glyph Pixels
-	
+
 	// Define the next pixel on the OLED display to skip.
 	uint16_t next_skip_idx = g_pixel_idx + g_width;
 	// The GDDRAM is byte-addressable, so two pixels must be written at once.
@@ -298,7 +301,7 @@ void oled_draw_char(char c, uint16_t curs_x, uint16_t curs_y) {
 					// Set the pixel to the maximum intensity on the OLED display.
 					buf |= 0x0F;
 				}
-			
+
 				g_pixel_idx++;
 			}
 
@@ -358,9 +361,9 @@ void oled_draw_str(char* str, uint16_t curs_x, uint16_t curs_y) {
 		// This value considers both the width of the given glyph and the space between glyphs.
 		uint8_t x_advance = pgm_read_byte(&GLYPHS[str[char_idx] - 32].xAdvance);
 
-		// Each pixel corresponds to a nibble in GDDRAM, so modular arithmetic must be performed 
+		// Each pixel corresponds to a nibble in GDDRAM, so modular arithmetic must be performed
 		// to properly advance the X cursor, which can be implemented using bitwise operations.
-		curs_x = curs_x + (x_advance >> 1) + (x_advance & 0x01);
+		curs_x += (x_advance >> 1) /* + (x_advance & 0x01) */;
 	}
 }
 

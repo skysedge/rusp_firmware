@@ -13,6 +13,10 @@
 #define ROTARY_DEBOUNCE_MS 30
 // ms after no pulses have been received when we decide the number is done
 #define PULSES_DONE_MS 500
+// battery max in mV
+#define LIPOMAX 4150
+// battery min in mV (consider 2750? failsafe cutoff is 2500)
+#define LIPOMIN 3500
 
 // https://en.wikipedia.org/wiki/X_macro
 #define FOR_CONTACTS(DO) \
@@ -50,6 +54,8 @@ bool ringing = false;
 unsigned long ringing_start = 0;
 // one of SW_ALT, SW_LOCAL, SW_NONLOCAL (or 0 for uninitialized)
 int prev_mode = 0;
+// alternate every 0x2000 ms
+bool clk2000h = true;
 
 
 // Interrupt Service Routines for the rotary dial's "pulse" switch, which is a
@@ -107,7 +113,7 @@ void isr_clear()
 	// Null-terminate the dial buffer.
 	dial_buf[dial_idx] = 0;
 	// Print the new dial buffer.
-	oled_print(dial_buf, 0, 30);
+	oled_print(dial_buf, 0, 48);
 }
 
 
@@ -117,6 +123,53 @@ char pulse2ascii(char pulse_count)
 	if (pulse_count == 10) pulse_count = 0;
 	if ((unsigned char)pulse_count < 10) return pulse_count + 0x30;
 	else return '?';
+}
+
+
+// thanks to
+// https://provideyourown.com/2012/
+//     secret-arduino-voltmeter-measure-battery-voltage/
+long vcc() {
+	// read 1.1V reference against AVcc
+	// set the reference to Vcc and the measurement to the internal 1.1V
+	// reference
+	ADMUX = _BV(REFS0) | _BV(MUX4) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
+	delay(2); // wait for Vref to settle
+	ADCSRA |= _BV(ADSC); // start conversion
+	while (bit_is_set(ADCSRA,ADSC)); // measuring
+
+	uint8_t low  = ADCL; // must read ADCL first - it then locks ADCH
+	uint8_t high = ADCH; // unlocks both
+
+	long result = (high<<8) | low;
+	// calculate Vcc (in mV); 1125300 = 1.1*1023*1000
+	result = 1125300L / result;
+	return result; // Vcc in millivolts
+}
+
+
+// convert charge in mV (reported from vcc()) to percent
+unsigned char battery_percent() {
+	int chargeLevel;
+	int lipo_range = LIPOMAX - LIPOMIN;
+
+	int lipo = ((vcc() - LIPOMIN) * 100) / (LIPOMAX - LIPOMIN);
+	if (lipo > 100) return 100;
+	if (lipo < 0) return 0;
+	return (unsigned char)lipo;
+}
+
+
+// write the decimal representation of an unsigned char to a string,
+// right-aligned with last digit at `str_end - 1`
+void decimal_uchar_flush_right(char *str_end, unsigned char x) {
+	unsigned char hundreds = x / 100;
+	x -= 100 * hundreds;
+	unsigned char tens = x / 10;
+	x -= 10 * tens;
+	str_end[-1] = 0x30 + x;
+	if (tens || hundreds) str_end[-2] = 0x30 + tens;
+	if (hundreds) str_end[-3] = 0x30 + hundreds;
 }
 
 
@@ -177,7 +230,7 @@ void setup()
 	sd_init(&Serial);
 
 	oled_init();
-	oled_print("STARTING", 0, 40);
+	oled_print("STARTING", 0, 48);
 
 	Serial.println("hello! turning LARA on");
 	digitalWrite(LED_STAT, HIGH);
@@ -213,7 +266,7 @@ void loop()
 	lara_unsolicited(&ringing);
 
 	if (ringing) {
-		oled_print("INCOMING CALL", 0, 20);
+		oled_print("INCOMING CALL", 0, 48);
 		if (t - ringing_start < 2000) {
 			if (t & 0b00100000) {
 				digitalWrite(RINGER_P, HIGH);
@@ -250,12 +303,12 @@ void loop()
 			#define CASE_CONTACT(c, f) \
 			case c: \
 				strcpy(dial_buf, sd_##f()); \
-				oled_print(dial_buf, 0, 30); \
+				oled_print(dial_buf, 0, 48); \
 				dial_idx = strlen(sd_##f()); \
 				break;
 			FOR_CONTACTS(CASE_CONTACT)
 			default:
-				oled_print("NOT FOUND", 0, 30);
+				oled_print("NOT FOUND", 0, 48);
 			}
 		// Check whether the dial index is below maximum capacity.
 		} else if (dial_idx < DIAL_BUF_LEN - 1) {
@@ -263,7 +316,7 @@ void loop()
 			if (digitalRead(SW_LOCAL) == LOW
 			&& dial_idx < strlen(sd_PREPEND())) {
 				strcpy(dial_buf, sd_PREPEND());
-				oled_print(dial_buf, 0, 30);
+				oled_print(dial_buf, 0, 48);
 				dial_idx = strlen(sd_PREPEND());
 			}
 			// Get the number the user entered.
@@ -272,7 +325,7 @@ void loop()
 			// the null byte.
 			dial_buf[++dial_idx] = 0;
 			// Print the dial buffer.
-			oled_print(dial_buf, 0, 30);
+			oled_print(dial_buf, 0, 48);
 			Serial.print("entered: ");
 			Serial.println(dial_buf);
 		}
@@ -290,17 +343,17 @@ void loop()
 		lara_activity stat = lara_status();
 		switch (stat) {
 		case LARA_RINGING:
-			oled_print("ANSWERING", 0, 30);
+			oled_print("ANSWERING", 0, 48);
 			Serial.println("answering");
 			lara_answer();
 			break;
 		case LARA_CALLING:
-			oled_print("HANGING UP", 0, 30);
+			oled_print("HANGING UP", 0, 48);
 			Serial.println("hanging up");
 			lara_hangup();
 			break;
 		case LARA_READY:
-			oled_print("DIALING", 0, 30);
+			oled_print("DIALING", 0, 48);
 			Serial.println("dialing");
 			lara_dial(dial_buf);
 			break;
@@ -310,6 +363,19 @@ void loop()
 			Serial.println();
 		}
 		hook = false;
+	}
+
+	// every 8192 ms
+	if (!!(t & 0x2000) != clk2000h) {
+		clk2000h = !clk2000h;
+		Serial.print("Vcc: ");
+		Serial.print(vcc());
+		Serial.println();
+		char status[] = "    % net       % bat";
+		decimal_uchar_flush_right(status + 16, battery_percent());
+		// TODO: bat percent
+		// TODO: separate statusline from regular line
+		oled_print(status, 0, 20);
 	}
 }
 
