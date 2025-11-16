@@ -24,7 +24,7 @@ GPIO.setup(prog, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 GPIO.setup(progtest, GPIO.IN, pull_up_down=GPIO.PUD_UP)   
 GPIO.setup(test, GPIO.IN, pull_up_down=GPIO.PUD_UP)   
 
-def flashusb():
+def flash16u2():
     print('Switching to 16U2')
     GPIO.output(K1_16U2, GPIO.HIGH) 
     GPIO.output(K2_16U2, GPIO.HIGH)
@@ -33,7 +33,7 @@ def flashusb():
     GPIO.output(K2_16U2, GPIO.LOW)
     time.sleep(.5)            
     print('Flashing 16U2')
-    result = subprocess.run(["make", "usb"], check=True)
+    result = subprocess.run(["make", "u2"], check=True)
     print(result.stdout)
     time.sleep(1)
 
@@ -54,7 +54,7 @@ def flashrusp():
     print('Flashing RUSP firmware')
     result = subprocess.run(["make", "usb"], check=True)
     print(result.stdout)
-    time(sleep(1)
+    time.sleep(1)
 
 def serialtests():
     # Open the serial connection
@@ -130,13 +130,13 @@ print('Ready')
 while True:
     try:
         if GPIO.input(prog) == False:
-            flashusb()
+            flash16u2()
             flashbootloader()
             flashrusp()
             print('Finished')
 
         if GPIO.input(progtest) == False:
-            flashusb()
+            flash16u2()
             flashbootloader()
             flashrusp()
             serialtests()
