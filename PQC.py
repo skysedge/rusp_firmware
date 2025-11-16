@@ -35,7 +35,8 @@ def flash16u2():
     print('Flashing 16U2')
     result = subprocess.run(["make", "u2"], check=True)
     print(result.stdout)
-    time.sleep(1)
+    print('Waiting...')
+    time.sleep(5)
 
 def flashbootloader():
     print('Switching to 2560')
@@ -48,7 +49,8 @@ def flashbootloader():
     print('Flashing 2560 bootloader')
     result = subprocess.run(["make", "bootloader"], check=True)
     print(result.stdout)
-    time.sleep(1)
+    print('Waiting...')
+    time.sleep(5)
 
 def flashrusp():
     print('Flashing RUSP firmware')
