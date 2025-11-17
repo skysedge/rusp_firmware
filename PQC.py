@@ -5,6 +5,7 @@ import time
 import subprocess
 import serial
 import threading
+import glob
 
 #3 5 7 11
 K1_2560 = 5     
@@ -24,7 +25,7 @@ GPIO.setup(prog, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 GPIO.setup(progtest, GPIO.IN, pull_up_down=GPIO.PUD_UP)   
 GPIO.setup(test, GPIO.IN, pull_up_down=GPIO.PUD_UP)   
 
-def flash16u2():
+def makeu2():
     print('Switching to 16U2')
     GPIO.output(K1_16U2, GPIO.HIGH) 
     GPIO.output(K2_16U2, GPIO.HIGH)
@@ -35,10 +36,9 @@ def flash16u2():
     print('Flashing 16U2')
     result = subprocess.run(["make", "u2"], check=True)
     print(result.stdout)
-    print('Waiting...')
-    time.sleep(5)
+    time.sleep(1)
 
-def flashbootloader():
+def makebootloader():
     print('Switching to 2560')
     GPIO.output(K1_2560, GPIO.HIGH) 
     GPIO.output(K2_2560, GPIO.HIGH)
@@ -49,10 +49,9 @@ def flashbootloader():
     print('Flashing 2560 bootloader')
     result = subprocess.run(["make", "bootloader"], check=True)
     print(result.stdout)
-    print('Waiting...')
-    time.sleep(5)
+    time.sleep(1)
 
-def flashrusp():
+def makeusb():
     print('Flashing RUSP firmware')
     result = subprocess.run(["make", "usb"], check=True)
     print(result.stdout)
@@ -111,6 +110,32 @@ def serialtests():
     reader_thread.join(timeout=1)
     ser.close()
 
+
+def reset_usb_device(vendor_id, product_id):
+    """Reset USB device by toggling authorized flag"""
+    # Find the device in sysfs
+    pattern = f'/sys/bus/usb/devices/*/idVendor'
+    for vendor_file in glob.glob(pattern):
+        with open(vendor_file, 'r') as f:
+            if f.read().strip() == vendor_id:
+                device_dir = vendor_file.replace('/idVendor', '')
+                product_file = f'{device_dir}/idProduct'
+                with open(product_file, 'r') as f:
+                    if f.read().strip() == product_id:
+                        # Found it! Toggle authorized
+                        auth_file = f'{device_dir}/authorized'
+                        print(f"Resetting USB device at {device_dir}")
+                        with open(auth_file, 'w') as f:
+                            f.write('0')
+                        time.sleep(0.5)
+                        with open(auth_file, 'w') as f:
+                            f.write('1')
+                        time.sleep(2)
+                        return True
+    return False
+
+
+
 print('Cycling relays')
 GPIO.output(K1_2560, GPIO.HIGH) 
 GPIO.output(K2_2560, GPIO.HIGH)
@@ -132,15 +157,18 @@ print('Ready')
 while True:
     try:
         if GPIO.input(prog) == False:
-            flash16u2()
-            flashbootloader()
-            flashrusp()
-            print('Finished')
+            makeu2()
+            makebootloader()
+
+            #print("Resetting USB connection...")
+            #if not reset_usb_device('2341', '0010'):
+            #    print("Warning: Could not find/reset USB device")
+            #    time.sleep(3)
+
+            print('Finished. Remove MB, reset USB connection, replace before next step.')
 
         if GPIO.input(progtest) == False:
-            flash16u2()
-            flashbootloader()
-            flashrusp()
+            makeusb()
             serialtests()
             print('Finished')
 
