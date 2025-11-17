@@ -1,0 +1,8 @@
+myString_1=Hello
+myString_2=testing123
+myInt_2=23
+
+//0 = percent, 1 = mV
+battDisplay=1
+
+areaCode=631
