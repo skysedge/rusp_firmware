@@ -1,9 +1,15 @@
 #include <EnableInterrupt.h>
+#include <GxEPD2_BW.h>
+#include <SPI.h>
+
+// Define placement new for Arduino (if not already defined)
+inline void* operator new(size_t, void* ptr) { return ptr; }
 
 #include "pins.h"
 #include "lara.h"
 #include "oled.h"
 #include "sd.h"
+#include "epd.h"
 
 // length of dial buffer (max 255 right now since dial_idx is unsigned char)
 #define DIAL_BUF_LEN 30
@@ -26,6 +32,12 @@
 	DO('8', CONTACT8) \
 	DO('9', CONTACT9) \
 	DO('0', CONTACT0)
+
+// ePaper display object (using static storage, not heap)
+// We use a static buffer and placement new to avoid dynamic allocation issues
+static uint8_t eink_buffer[sizeof(GxEPD2_BW<GxEPD2_290_flex, MAX_HEIGHT(GxEPD2_290_flex)>)];
+static GxEPD2_BW<GxEPD2_290_flex, MAX_HEIGHT(GxEPD2_290_flex)> *eink = nullptr;
+static bool eink_constructed = false;
 
 // ugly global variables
 // should we be counting pulses?
@@ -186,6 +198,8 @@ void setup()
 
 	oled_clear();
 	digitalWrite(LED_BELL, LOW);
+	
+	// Note: ePaper will be initialized after a delay in the main loop
 }
 
 
@@ -194,8 +208,14 @@ void loop()
 	unsigned long t = millis();
 
 	if (digitalRead(OFFSIGNAL) == LOW) shutdown();
-	// TODO: this is for debug purposes
-	if (digitalRead(SW_ALPHA) == LOW) ringing = true;
+	
+	// Splash screen on SW_ALPHA button press
+	static unsigned long alpha_last = 0;
+	if (digitalRead(SW_ALPHA) == LOW && (t - alpha_last > 1000)) {
+		alpha_last = t;
+		Serial.println("Displaying splash screen...");
+		epd_splash();
+	}
 
 	// figure out which throw the 1p3t switch is on
 	int cur_mode;
@@ -244,8 +264,16 @@ void loop()
 		if (digitalRead(SW_ALT) == LOW) {
 			// Get the number the user entered.
 			char contact_idx = pulse2ascii(pulses);
+			
+			// Display contacts page on ePaper
+			int n = pulse2ascii(pulses) - '0';  // Convert to actual digit
+			if (n >= 0 && n <= 9) {
+				Serial.print("Displaying contacts page ");
+				Serial.println(n);
+				pg = epd_displayContacts(n);
+			}
 
-			// Match the number to the contact list.
+			// Match the number to the contact list for dialing
 			switch (contact_idx) {
 			#define CASE_CONTACT(c, f) \
 			case c: \
@@ -324,4 +352,3 @@ void shutdown()
 	digitalWrite(RELAY_OFF, HIGH);
 	// POWER KILLED
 }
-

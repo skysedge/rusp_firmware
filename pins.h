@@ -25,6 +25,13 @@
 #define EN_OUTAMP A15
 #define CELL_ON A0
 #define CHIPSELECT 24
+
+// ePaper display pins
+#define EPD_CS 25      // Chip select
+#define EPD_DC 26      // Data/Command
+#define EPD_RST 28     // Reset
+#define EPD_BUSY 29    // Busy signal
+
 #define SW_C 15
 #define SW_HOOK 14
 #define SW_ALPHA 10
@@ -38,4 +45,3 @@
 #define CHG_STAT 44
 
 #endif	// include guard
-
