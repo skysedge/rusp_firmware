@@ -11,6 +11,12 @@ inline void* operator new(size_t, void* ptr) { return ptr; }
 #include "sd.h"
 #include "epd.h"
 
+// External declarations for contact data (from epd_contact.cpp)
+extern char CName[30];
+extern int CNumber[30];
+extern int kc;
+extern int pg;
+
 // length of dial buffer (max 255 right now since dial_idx is unsigned char)
 #define DIAL_BUF_LEN 30
 // subtracted from pulse count to get number dialed
@@ -263,27 +269,83 @@ void loop()
 		// alt (contacts) mode
 		if (digitalRead(SW_ALT) == LOW) {
 			// Get the number the user entered.
-			char contact_idx = pulse2ascii(pulses);
-			
-			// Display contacts page on ePaper
 			int n = pulse2ascii(pulses) - '0';  // Convert to actual digit
+			
+			// Check if hook was held while dialing (Speed Dial mode)
+			bool speed_dial = (digitalRead(SW_HOOK) == LOW);
+			
 			if (n >= 0 && n <= 9) {
-				Serial.print("Displaying contacts page ");
-				Serial.println(n);
-				pg = epd_displayContacts(n);
-			}
-
-			// Match the number to the contact list for dialing
-			switch (contact_idx) {
-			#define CASE_CONTACT(c, f) \
-			case c: \
-				strcpy(dial_buf, sd_##f()); \
-				oled_print(dial_buf, 0, 30); \
-				dial_idx = strlen(sd_##f()); \
-				break;
-			FOR_CONTACTS(CASE_CONTACT)
-			default:
-				oled_print("NOT FOUND", 0, 30);
+				if (speed_dial) {
+					// Speed dial: Load contact from current page and dial immediately
+					// Calculate actual contact line: contacts on page pg, position n
+					// Page 1 (pg=1) positions 1-9 = contacts 1-9
+					// Page 2 (pg=2) positions 1-9 = contacts 10-18, etc.
+					int contact_line = (pg * 9) - 9 + n;
+					
+					Serial.print("Speed dial: Loading contact ");
+					Serial.print(contact_line);
+					Serial.print(" (page ");
+					Serial.print(pg);
+					Serial.print(", position ");
+					Serial.print(n);
+					Serial.println(")");
+					
+					SDgetContact(contact_line);
+					
+					// Convert CNumber[] array to dial_buf string
+					dial_idx = 0;
+					for (int j = 0; j < kc - 2 && j < DIAL_BUF_LEN - 1; j++) {
+						dial_buf[dial_idx++] = CNumber[j] + '0';
+					}
+					dial_buf[dial_idx] = '\0';
+					
+					// Display on OLED
+					oled_enable();
+					oled_clear();
+					oled_draw_str(CName, 0, 20);
+					oled_draw_str(dial_buf, 0, 35);
+					
+					Serial.print("Speed dialing: ");
+					Serial.print(CName);
+					Serial.print(" - ");
+					Serial.println(dial_buf);
+					
+					// Dial immediately
+					delay(500);  // Brief delay to show the contact
+					lara_dial(dial_buf);
+					
+				} else {
+					// Regular Alt mode: Show contacts page and load first contact
+					Serial.print("Alt mode: Loading contact page ");
+					Serial.println(n);
+					
+					// Display contacts page on ePaper and remember which page
+					pg = epd_displayContacts(n);
+					
+					// Load the first contact from this page for potential dialing
+					int contact_line = (n == 0) ? 10 : n;
+					SDgetContact(contact_line);
+					
+					// Convert CNumber[] array to dial_buf string
+					dial_idx = 0;
+					for (int j = 0; j < kc - 2 && j < DIAL_BUF_LEN - 1; j++) {
+						dial_buf[dial_idx++] = CNumber[j] + '0';
+					}
+					dial_buf[dial_idx] = '\0';
+					
+					// Display on OLED
+					oled_enable();
+					oled_clear();
+					oled_draw_str(CName, 0, 20);
+					oled_draw_str(dial_buf, 0, 35);
+					
+					Serial.print("Loaded contact: ");
+					Serial.print(CName);
+					Serial.print(" - ");
+					Serial.println(dial_buf);
+				}
+			} else {
+				oled_print("INVALID", 0, 30);
 			}
 		// Check whether the dial index is below maximum capacity.
 		} else if (dial_idx < DIAL_BUF_LEN - 1) {

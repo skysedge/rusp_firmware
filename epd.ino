@@ -41,12 +41,30 @@ int epd_displayContacts(int n){
 	int col = 0;
 	int row = 12;
 	int ctcID = 1;
-	n = n-2;	//Don't understand why this is needed, again.
-	eink->fillScreen(GxEPD_WHITE); // set the background to white (fill the buffer with value for white)
-	eink->setFont();	//default font
-	eink->firstPage();	//this function is called before every time ePaper is updated. Has nothing to do with what I call page numbers in this section of the program.
+	
+	// Calculate which contacts to show and which page this is
+	// Dial 1 → page 1, show contacts 1-9
+	// Dial 2 → page 2, show contacts 10-18
+	// Dial 0 → page 2, show contacts 10-18 (same as dial 2)
+	int page_num = (n == 0) ? 2 : n;
+	int start_contact = ((n == 0) ? 10 : ((n - 1) * 9 + 1));
+	int end_contact = start_contact + 8;  // 9 contacts per page
+	
+	Serial.print("Page ");
+	Serial.print(page_num);
+	Serial.print(": Showing contacts ");
+	Serial.print(start_contact);
+	Serial.print(" to ");
+	Serial.println(end_contact);
+	
+	eink->fillScreen(GxEPD_WHITE);
+	eink->setFont();
+	eink->firstPage();
 	do {
-		for(int line = (n*9)-8; line <= (n*9); line++){		//loop through 10 lines/contacts (1 "page") starting with the page dialed.
+		row = 12;  // Reset row position
+		ctcID = 1; // Display ID always 1-9 on each page
+		
+		for(int line = start_contact; line <= end_contact; line++){
 			SDgetContact(line);	//Fills CName[] and CNumber[] for the current line
 			eink->setFont(&FreeSans9pt7b);	//Font for contact name
 			eink->setCursor(col, row);
@@ -66,13 +84,11 @@ int epd_displayContacts(int n){
 			row = row + 33;	//Space to next contact name
 			ctcID++;
 		}
-		row = 12;	//reset row for the next iteration of the do/while loop
-		ctcID = 1;	//reset contact ID
 	} while (eink->nextPage());
 	eink->hibernate();
 	
 	Serial.println("ePaper: Contacts complete, hibernated");
-	return n;
+	return page_num;  // Return the page number for speed dial reference
 }
 
 void epd_splash(){
