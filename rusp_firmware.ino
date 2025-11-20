@@ -68,6 +68,10 @@ bool ringing = false;
 unsigned long ringing_start = 0;
 // one of SW_ALT, SW_LOCAL, SW_NONLOCAL (or 0 for uninitialized)
 int prev_mode = 0;
+// OLED digit feedback display
+String oled_dialed_digits = "";
+unsigned long last_digit_display_time = 0;
+#define DIGIT_DISPLAY_TIMEOUT 3000  // Clear after 3 seconds
 
 
 // Interrupt Service Routines for the rotary dial's "pulse" switch, which is a
@@ -135,6 +139,31 @@ char pulse2ascii(char pulse_count)
 	if (pulse_count == 10) pulse_count = 0;
 	if ((unsigned char)pulse_count < 10) return pulse_count + 0x30;
 	else return '?';
+}
+
+
+void show_dialed_digit_on_oled(char digit)
+{
+	// Add digit to display string
+	oled_dialed_digits += digit;
+	last_digit_display_time = millis();
+	
+	// Display immediately on OLED
+	oled_enable();
+	oled_clear();
+	
+	// Show just the accumulated digits (no label needed)
+	char digit_buf[DIAL_BUF_LEN];
+	oled_dialed_digits.toCharArray(digit_buf, DIAL_BUF_LEN);
+	oled_draw_str(digit_buf, 0, 10);
+	
+	// Show mode indicator if in alt mode (on second line if needed)
+	if (digitalRead(SW_ALT) == LOW) {
+		oled_draw_str("(ALT)", 0, 30);
+	}
+	
+	Serial.print("OLED showing digit: ");
+	Serial.println(oled_dialed_digits);
 }
 
 
@@ -215,6 +244,13 @@ void loop()
 
 	if (digitalRead(OFFSIGNAL) == LOW) shutdown();
 	
+	// Clear OLED digit display after timeout
+	if (oled_dialed_digits.length() > 0 && 
+	    (t - last_digit_display_time > DIGIT_DISPLAY_TIMEOUT)) {
+		oled_dialed_digits = "";
+		oled_clear();
+	}
+	
 	// Splash screen on SW_ALPHA button press
 	static unsigned long alpha_last = 0;
 	if (digitalRead(SW_ALPHA) == LOW && (t - alpha_last > 1000)) {
@@ -233,6 +269,7 @@ void loop()
 		dial_idx = 0;
 		dial_buf[dial_idx] = 0;
 		prev_mode = cur_mode;
+		oled_dialed_digits = "";  // Clear digit display
 		oled_clear();
 	}
 
@@ -265,6 +302,10 @@ void loop()
 	if (pulses && t - pulse_last > PULSES_DONE_MS) {
 		disableInterrupt(SW_ROTARY);
 		disableInterrupt(SW_HALL);
+
+		// CRITICAL: Show the digit on OLED FIRST, before any mode logic
+		char entered_digit = pulse2ascii(pulses);
+		show_dialed_digit_on_oled(entered_digit);
 
 		// alt (contacts) mode
 		if (digitalRead(SW_ALT) == LOW) {
@@ -377,6 +418,7 @@ void loop()
 
 	if (hook) {
 		Serial.println("hook pressed");
+		oled_dialed_digits = "";  // Clear digit display on hook press
 		lara_activity stat = lara_status();
 		switch (stat) {
 		case LARA_RINGING:
