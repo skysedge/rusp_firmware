@@ -34,9 +34,13 @@ def makeu2():
     GPIO.output(K2_16U2, GPIO.LOW)
     time.sleep(.5)            
     print('Flashing 16U2')
-    result = subprocess.run(["make", "u2"], check=True)
-    print(result.stdout)
+    result = subprocess.run(["make", "u2"])
+    if result.returncode != 0:
+        print(f"ERROR: Failed to flash 16U2 - check connections")
+        return False
+    print("16U2 flashed successfully")
     time.sleep(1)
+    return True
 
 def makebootloader():
     print('Switching to 2560')
@@ -47,15 +51,23 @@ def makebootloader():
     GPIO.output(K2_2560, GPIO.LOW)    
     time.sleep(.5)            
     print('Flashing 2560 bootloader')
-    result = subprocess.run(["make", "bootloader"], check=True)
-    print(result.stdout)
+    result = subprocess.run(["make", "bootloader"])
+    if result.returncode != 0:
+        print(f"ERROR: Failed to flash 2560 bootloader - check connections")
+        return False
+    print("2560 bootloader flashed successfully")
     time.sleep(1)
+    return True
 
 def makeusb():
     print('Flashing RUSP firmware')
-    result = subprocess.run(["make", "usb"], check=True)
-    print(result.stdout)
+    result = subprocess.run(["make", "usb"])
+    if result.returncode != 0:
+        print(f"ERROR: Failed to flash RUSP firmware - check connections")
+        return False
+    print("RUSP firmware flashed successfully")
     time.sleep(1)
+    return True
 
 def serialtests():
     # Open the serial connection
@@ -159,13 +171,7 @@ while True:
         if GPIO.input(prog) == False:
             makeu2()
             makebootloader()
-
-            #print("Resetting USB connection...")
-            #if not reset_usb_device('2341', '0010'):
-            #    print("Warning: Could not find/reset USB device")
-            #    time.sleep(3)
-
-            print('Finished. Remove MB, reset USB connection, replace before next step.')
+            print('Programming complete (or failed - check messages above)')
 
         if GPIO.input(progtest) == False:
             makeusb()
@@ -185,6 +191,3 @@ while True:
         GPIO.output(K2_16U2, GPIO.LOW)
         GPIO.cleanup() # Clean up GPIO settings
         break
-
-
-
