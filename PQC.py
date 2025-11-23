@@ -97,7 +97,7 @@ def serialtests():
 
     # Wait for startup messages
     print("Waiting for startup messages...")
-    time.sleep(12)
+    time.sleep(15)
 
     # Send your commands
     send_command("at")
@@ -121,6 +121,56 @@ def serialtests():
     running = False
     reader_thread.join(timeout=1)
     ser.close()
+
+def tonetest():
+    # Open the serial connection
+    ser = serial.Serial('/dev/ttyACM0', 115200, timeout=0.1)
+
+    # Flag to control the reader thread
+    running = True
+
+    def read_serial():
+        """Continuously read and display messages from the device"""
+        while running:
+            if ser.in_waiting:
+                response = ser.readline().decode('utf-8', errors='ignore').strip()
+                if response:
+                    print(f"Device: {response}")
+            time.sleep(0.01)
+
+    # Start the reader thread
+    reader_thread = threading.Thread(target=read_serial, daemon=True)
+    reader_thread.start()
+
+    def send_command(cmd):
+        print(f"Sending: {cmd}")
+        bytes_written = ser.write(f"{cmd}\r".encode())
+        print(f"  Wrote {bytes_written} bytes")
+        time.sleep(0.5)  # Wait longer for response
+
+    # Wait for startup messages
+    print("Waiting for startup messages...")
+    time.sleep(15)
+
+    # Send your commands
+    send_command("at")
+    time.sleep(1)
+    print("sending tone to speaker in 3")
+    time.sleep(1)
+    print("2")
+    time.sleep(1)
+    print("1")
+    time.sleep(1)
+    send_command("AT+UTGN=1000,1000,100,0") #make tone
+
+    # Give more time for final responses
+    time.sleep(2)
+
+    # Clean up
+    running = False
+    reader_thread.join(timeout=1)
+    ser.close()
+
 
 
 def reset_usb_device(vendor_id, product_id):
@@ -185,7 +235,7 @@ while True:
                 print('Firmware programming failed - skipping serial tests')
 
         if GPIO.input(test) == False:
-            serialtests()
+            tonetest()
             print('Finished')
 
 
