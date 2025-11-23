@@ -132,6 +132,9 @@ void isr_hall()
 {
 	pulsing = true;
 	pulses = 0;
+	// Capture hook button state immediately (safe in ISR - just reading a pin state)
+	// SW_HOOK is INPUT_PULLUP, so LOW = pressed
+	hook_during_dial = (digitalRead(SW_HOOK) == LOW);
 }
 
 
@@ -330,13 +333,6 @@ void loop()
 	
 	// Pulse effects LEDs while rotary dial is turning
 	if (pulsing) {
-		// Capture hook state at the very start of pulsing (only once per dial)
-		static bool hook_captured = false;
-		if (!hook_captured) {
-			hook_during_dial = (digitalRead(SW_HOOK) == LOW);
-			hook_captured = true;
-		}
-		
 		// Toggle LEDs at regular intervals for pulsing effect
 		if (t - last_led_toggle >= LED_PULSE_INTERVAL) {
 			last_led_toggle = t;
@@ -348,10 +344,7 @@ void loop()
 			}
 		}
 	} else {
-		// Not pulsing - ensure LEDs are off and reset capture flag
-		static bool hook_captured = false;
-		hook_captured = false;  // Reset for next dial
-		
+		// Not pulsing - ensure LEDs are off
 		if (led_effects_state) {
 			effects_leds_off();
 			led_effects_state = false;
@@ -471,6 +464,13 @@ void loop()
 			
 			// Check if hook was pressed at start of dialing (Speed Dial mode)
 			bool speed_dial = hook_during_dial;
+			
+			Serial.print("ALT mode: n=");
+			Serial.print(n);
+			Serial.print(", hook_during_dial=");
+			Serial.print(hook_during_dial);
+			Serial.print(", speed_dial=");
+			Serial.println(speed_dial);
 			
 			if (n >= 0 && n <= 9) {
 				if (speed_dial) {
