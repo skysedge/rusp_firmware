@@ -221,7 +221,7 @@ while True:
         if GPIO.input(prog) == False:
             if makeu2():
                 if makebootloader():
-                    print('Programming complete - remove MB, reset USB connection, replace before next step.')
+                    print('COMPLETE. Reset MB in fixture and attach DB if not already done.')
                 else:
                     print('Programming failed at bootloader step')
             else:
@@ -242,7 +242,7 @@ while True:
     except KeyboardInterrupt: #looks for ctrl+C
         print("Program terminated by user.")
         GPIO.output(K1_2560, GPIO.LOW) 
-        GPIO.output(K2_2560, GPIO.LOW)    
+        GPIO.output(K2_2560, GPIO.LOW)  
         GPIO.output(K1_16U2, GPIO.LOW) 
         GPIO.output(K2_16U2, GPIO.LOW)
         GPIO.cleanup() # Clean up GPIO settings
