@@ -62,6 +62,10 @@ unsigned char dial_idx = 0;
 bool hook = false;
 // for debouncing
 unsigned long hook_last = 0;
+// for tracking hook hold time
+bool hook_pressed = false;
+unsigned long hook_press_start = 0;
+#define HOOK_HOLD_TIME 1000  // Must hold for 1 second
 // are we ringing the bell
 bool ringing = false;
 // when did ringing start
@@ -72,6 +76,14 @@ int prev_mode = 0;
 String oled_dialed_digits = "";
 unsigned long last_digit_display_time = 0;
 #define DIGIT_DISPLAY_TIMEOUT 3000  // Clear after 3 seconds
+// OLED status message display
+String oled_status_message = "";
+unsigned long last_status_message_time = 0;
+#define STATUS_MESSAGE_TIMEOUT 2000  // Clear status after 2 seconds
+// LED effects for rotary dial
+unsigned long last_led_toggle = 0;
+bool led_effects_state = false;
+#define LED_PULSE_INTERVAL 50  // Toggle LEDs every 100ms for visible pulsing
 
 
 // Interrupt Service Routines for the rotary dial's "pulse" switch, which is a
@@ -103,7 +115,7 @@ void isr_hall()
 	digitalWrite(LED_FILAMENT, HIGH);
 	pulsing = true;
 	pulses = 0;
-	delay(10);	// TODO: see above
+	delay(200);	// TODO: see above
 	digitalWrite(LED_FILAMENT, LOW);
 }
 
@@ -113,7 +125,11 @@ void isr_hook()
 	unsigned long hook_cur = millis();
 	if (hook_cur - hook_last > 30) {
 		hook_last = hook_cur;
-		hook = true;
+		// Track when button was pressed, don't trigger action yet
+		if (!hook_pressed) {
+			hook_pressed = true;
+			hook_press_start = hook_cur;
+		}
 	}
 }
 
@@ -135,9 +151,15 @@ void isr_clear()
 
 char pulse2ascii(char pulse_count)
 {
-	pulse_count -= PULSE_FUDGE;
-	if (pulse_count == 10) pulse_count = 0;
-	if ((unsigned char)pulse_count < 10) return pulse_count + 0x30;
+	// Rotary dial positions:
+	// Dial "1" = 1 pulse → should display '1'
+	// Dial "2" = 2 pulses → should display '2'
+	// ...
+	// Dial "9" = 9 pulses → should display '9'
+	// Dial "0" = 10 pulses → should display '0'
+
+	if (pulse_count == 10) return '0';
+	if (pulse_count >= 1 && pulse_count <= 9) return pulse_count + '0';
 	else return '?';
 }
 
@@ -147,23 +169,53 @@ void show_dialed_digit_on_oled(char digit)
 	// Add digit to display string
 	oled_dialed_digits += digit;
 	last_digit_display_time = millis();
-	
+
 	// Display immediately on OLED
 	oled_enable();
 	oled_clear();
-	
+
 	// Show just the accumulated digits (no label needed)
 	char digit_buf[DIAL_BUF_LEN];
 	oled_dialed_digits.toCharArray(digit_buf, DIAL_BUF_LEN);
 	oled_draw_str(digit_buf, 0, 10);
-	
+
 	// Show mode indicator if in alt mode (on second line if needed)
 	if (digitalRead(SW_ALT) == LOW) {
 		oled_draw_str("(ALT)", 0, 30);
 	}
-	
+
 	Serial.print("OLED showing digit: ");
 	Serial.println(oled_dialed_digits);
+}
+
+
+void effects_leds_on()
+{
+	// Turn on all effects LEDs
+	digitalWrite(LED1A, HIGH);
+	digitalWrite(LED2A, HIGH);
+	digitalWrite(LED2R, HIGH);
+	digitalWrite(LED3A, HIGH);
+	digitalWrite(LED3R, HIGH);
+	digitalWrite(LED4A, HIGH);
+	digitalWrite(LED4R, HIGH);
+	digitalWrite(LED5A, HIGH);
+	digitalWrite(LED5R, HIGH);
+}
+
+
+void effects_leds_off()
+{
+	// Turn off all effects LEDs
+	digitalWrite(LED1A, LOW);
+	digitalWrite(LED2A, LOW);
+	digitalWrite(LED2R, LOW);
+	digitalWrite(LED3A, LOW);
+	digitalWrite(LED3R, LOW);
+	digitalWrite(LED4A, LOW);
+	digitalWrite(LED4R, LOW);
+	digitalWrite(LED5A, LOW);
+	digitalWrite(LED5R, LOW);
 }
 
 
@@ -233,8 +285,11 @@ void setup()
 
 	oled_clear();
 	digitalWrite(LED_BELL, LOW);
-	
-	// Note: ePaper will be initialized after a delay in the main loop
+
+	// Display splash screen on startup
+	Serial.println("Displaying startup splash screen...");
+	epd_splash();
+	Serial.println("Startup complete!");
 }
 
 
@@ -243,20 +298,39 @@ void loop()
 	unsigned long t = millis();
 
 	if (digitalRead(OFFSIGNAL) == LOW) shutdown();
-	
+
 	// Clear OLED digit display after timeout
-	if (oled_dialed_digits.length() > 0 && 
+	if (oled_dialed_digits.length() > 0 &&
 	    (t - last_digit_display_time > DIGIT_DISPLAY_TIMEOUT)) {
 		oled_dialed_digits = "";
 		oled_clear();
 	}
-	
-	// Splash screen on SW_ALPHA button press
-	static unsigned long alpha_last = 0;
-	if (digitalRead(SW_ALPHA) == LOW && (t - alpha_last > 1000)) {
-		alpha_last = t;
-		Serial.println("Displaying splash screen...");
-		epd_splash();
+
+	// Clear OLED status message after timeout
+	if (oled_status_message.length() > 0 &&
+	    (t - last_status_message_time > STATUS_MESSAGE_TIMEOUT)) {
+		oled_status_message = "";
+		oled_clear();
+	}
+
+	// Pulse effects LEDs while rotary dial is turning
+	if (pulsing) {
+		// Toggle LEDs at regular intervals for pulsing effect
+		if (t - last_led_toggle >= LED_PULSE_INTERVAL) {
+			last_led_toggle = t;
+			led_effects_state = !led_effects_state;
+			if (led_effects_state) {
+				effects_leds_on();
+			} else {
+				effects_leds_off();
+			}
+		}
+	} else {
+		// Not pulsing - ensure LEDs are off
+		if (led_effects_state) {
+			effects_leds_off();
+			led_effects_state = false;
+		}
 	}
 
 	// figure out which throw the 1p3t switch is on
@@ -289,6 +363,9 @@ void loop()
 			}
 		} else {
 			ringing = false;
+			// Clear the "INCOMING CALL" message
+			oled_status_message = "";
+			oled_clear();
 		}
 	} else {
 		digitalWrite(RINGER_P, LOW);
@@ -311,10 +388,10 @@ void loop()
 		if (digitalRead(SW_ALT) == LOW) {
 			// Get the number the user entered.
 			int n = pulse2ascii(pulses) - '0';  // Convert to actual digit
-			
+
 			// Check if hook was held while dialing (Speed Dial mode)
 			bool speed_dial = (digitalRead(SW_HOOK) == LOW);
-			
+
 			if (n >= 0 && n <= 9) {
 				if (speed_dial) {
 					// Speed dial: Load contact from current page and dial immediately
@@ -322,7 +399,7 @@ void loop()
 					// Page 1 (pg=1) positions 1-9 = contacts 1-9
 					// Page 2 (pg=2) positions 1-9 = contacts 10-18, etc.
 					int contact_line = (pg * 9) - 9 + n;
-					
+
 					Serial.print("Speed dial: Loading contact ");
 					Serial.print(contact_line);
 					Serial.print(" (page ");
@@ -330,56 +407,56 @@ void loop()
 					Serial.print(", position ");
 					Serial.print(n);
 					Serial.println(")");
-					
+
 					SDgetContact(contact_line);
-					
+
 					// Convert CNumber[] array to dial_buf string
 					dial_idx = 0;
 					for (int j = 0; j < kc - 2 && j < DIAL_BUF_LEN - 1; j++) {
 						dial_buf[dial_idx++] = CNumber[j] + '0';
 					}
 					dial_buf[dial_idx] = '\0';
-					
+
 					// Display on OLED
 					oled_enable();
 					oled_clear();
 					oled_draw_str(CName, 0, 20);
 					oled_draw_str(dial_buf, 0, 35);
-					
+
 					Serial.print("Speed dialing: ");
 					Serial.print(CName);
 					Serial.print(" - ");
 					Serial.println(dial_buf);
-					
+
 					// Dial immediately
 					delay(500);  // Brief delay to show the contact
 					lara_dial(dial_buf);
-					
+
 				} else {
 					// Regular Alt mode: Show contacts page and load first contact
 					Serial.print("Alt mode: Loading contact page ");
 					Serial.println(n);
-					
+
 					// Display contacts page on ePaper and remember which page
 					pg = epd_displayContacts(n);
-					
+
 					// Load the first contact from this page for potential dialing
 					int contact_line = (n == 0) ? 10 : n;
 					SDgetContact(contact_line);
-					
+
 					// Convert CNumber[] array to dial_buf string
 					dial_idx = 0;
 					for (int j = 0; j < kc - 2 && j < DIAL_BUF_LEN - 1; j++) {
 						dial_buf[dial_idx++] = CNumber[j] + '0';
 					}
 					dial_buf[dial_idx] = '\0';
-					
+
 					// Display on OLED
 					oled_enable();
 					oled_clear();
 					oled_draw_str(CName, 0, 20);
 					oled_draw_str(dial_buf, 0, 35);
-					
+
 					Serial.print("Loaded contact: ");
 					Serial.print(CName);
 					Serial.print(" - ");
@@ -416,22 +493,47 @@ void loop()
 		enableInterrupt(SW_HALL, isr_hall, FALLING);
 	}
 
+	// Check if hook button is being held
+	if (hook_pressed) {
+		// Check if button is still pressed
+		if (digitalRead(SW_HOOK) == LOW) {
+			// Button still held - check if held long enough
+			if ((t - hook_press_start >= HOOK_HOLD_TIME) && !hook) {
+				// Held for 1 second - trigger action
+				hook = true;
+				Serial.println("hook held for 1 second - triggering action");
+			}
+		} else {
+			// Button released before 1 second
+			hook_pressed = false;
+			if (!hook) {
+				Serial.println("hook released too early - ignoring");
+			}
+		}
+	}
+
 	if (hook) {
 		Serial.println("hook pressed");
 		oled_dialed_digits = "";  // Clear digit display on hook press
 		lara_activity stat = lara_status();
 		switch (stat) {
 		case LARA_RINGING:
+			oled_status_message = "ANSWERING";
+			last_status_message_time = t;
 			oled_print("ANSWERING", 0, 30);
 			Serial.println("answering");
 			lara_answer();
 			break;
 		case LARA_CALLING:
+			oled_status_message = "HANGING UP";
+			last_status_message_time = t;
 			oled_print("HANGING UP", 0, 30);
 			Serial.println("hanging up");
 			lara_hangup();
 			break;
 		case LARA_READY:
+			oled_status_message = "DIALING";
+			last_status_message_time = t;
 			oled_print("DIALING", 0, 30);
 			Serial.println("dialing");
 			lara_dial(dial_buf);
@@ -442,6 +544,7 @@ void loop()
 			Serial.println();
 		}
 		hook = false;
+		hook_pressed = false;  // Reset the press tracking
 	}
 }
 
