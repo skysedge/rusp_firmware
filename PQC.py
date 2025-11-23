@@ -43,7 +43,7 @@ def makeu2():
     time.sleep(.1) 
     GPIO.output(K1_16U2, GPIO.LOW) 
     GPIO.output(K2_16U2, GPIO.LOW)
-    time.sleep(.5)            
+    time.sleep(1)            
     print('Flashing 16U2')
     result = subprocess.run(["make", "u2"])
     if result.returncode != 0:
@@ -60,7 +60,7 @@ def makebootloader():
     time.sleep(.1)             
     GPIO.output(K1_2560, GPIO.LOW) 
     GPIO.output(K2_2560, GPIO.LOW)    
-    time.sleep(.5)            
+    time.sleep(1)            
     print('Flashing 2560 bootloader')
     result = subprocess.run(["make", "bootloader"])
     if result.returncode != 0:
