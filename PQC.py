@@ -169,14 +169,20 @@ print('Ready')
 while True:
     try:
         if GPIO.input(prog) == False:
-            makeu2()
-            makebootloader()
-            print('Programming complete (or failed - check messages above)')
+            if makeu2():
+                if makebootloader():
+                    print('Programming complete - remove MB, reset USB connection, replace before next step.')
+                else:
+                    print('Programming failed at bootloader step')
+            else:
+                print('Programming failed at 16U2 step')
 
         if GPIO.input(progtest) == False:
-            makeusb()
-            serialtests()
-            print('Finished')
+            if makeusb():
+                serialtests()
+                print('Finished')
+            else:
+                print('Firmware programming failed - skipping serial tests')
 
         if GPIO.input(test) == False:
             serialtests()
