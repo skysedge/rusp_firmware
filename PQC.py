@@ -114,11 +114,15 @@ def serialtests():
     def read_serial():
         """Continuously read and display messages from the device"""
         while running:
-            if ser.in_waiting:
-                response = ser.readline().decode('utf-8', errors='ignore').strip()
-                if response:
-                    print(f"Device: {response}")
-            time.sleep(0.01)
+            try:
+                if ser.in_waiting:
+                    response = ser.readline().decode('utf-8', errors='ignore').strip()
+                    if response:
+                        print(f"Device: {response}")
+                time.sleep(0.01)
+            except (OSError, serial.SerialException) as e:
+                print(f"Serial read error: {e}")
+                break
 
     # Start the reader thread
     reader_thread = threading.Thread(target=read_serial, daemon=True)
@@ -177,11 +181,15 @@ def tonetest():
     def read_serial():
         """Continuously read and display messages from the device"""
         while running:
-            if ser.in_waiting:
-                response = ser.readline().decode('utf-8', errors='ignore').strip()
-                if response:
-                    print(f"Device: {response}")
-            time.sleep(0.01)
+            try:
+                if ser.in_waiting:
+                    response = ser.readline().decode('utf-8', errors='ignore').strip()
+                    if response:
+                        print(f"Device: {response}")
+                time.sleep(0.01)
+            except (OSError, serial.SerialException) as e:
+                print(f"Serial read error: {e}")
+                break
 
     # Start the reader thread
     reader_thread = threading.Thread(target=read_serial, daemon=True)
@@ -267,7 +275,7 @@ while True:
         if GPIO.input(prog1) == False:
             if makeu2():
                 if makebootloader():
-                    print('COMPLETE. Reset MB in fixture and attach DB if not already done.')
+                    print('COMPLETE. Reset MB in fixture and attach DB if not already done. POWER SWITCH ON.')
                 else:
                     print('Programming failed at bootloader step')
             else:
@@ -276,12 +284,12 @@ while True:
         if GPIO.input(prog2) == False:
             if makeusb():
                 serialtests()
-                print('Finished')
+                print('Finished. TURN POWER SWITCH OFF before removing.')
             else:
                 print('Firmware programming failed - skipping serial tests')
 
         if GPIO.input(test) == False:
-            tonetest()
+            serialtests()
             print('Finished')
 
 
