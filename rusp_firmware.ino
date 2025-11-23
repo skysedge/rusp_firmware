@@ -2,6 +2,9 @@
 #include <GxEPD2_BW.h>
 #include <SPI.h>
 
+// Firmware version
+#define FIRMWARE_VERSION "1.0.0"
+
 // Define placement new for Arduino (if not already defined)
 inline void* operator new(size_t, void* ptr) { return ptr; }
 
@@ -70,6 +73,8 @@ unsigned long hook_press_start = 0;
 bool ringing = false;
 // when did ringing start
 unsigned long ringing_start = 0;
+// when did we last receive a RING URC from the modem
+unsigned long last_ring_urc = 0;
 // one of SW_ALT, SW_LOCAL, SW_NONLOCAL (or 0 for uninitialized)
 int prev_mode = 0;
 // OLED digit feedback display
@@ -231,6 +236,10 @@ void effects_leds_off()
 void setup()
 {
 	Serial.begin(115200);
+	
+	// Print firmware version
+	Serial.print("RUSP Firmware v");
+	Serial.println(FIRMWARE_VERSION);
 
 	pinMode(LED_STAT, OUTPUT);
 	pinMode(LED_FILAMENT, OUTPUT);
@@ -352,7 +361,7 @@ void loop()
 		oled_clear();
 	}
 
-	lara_unsolicited(&ringing);
+	lara_unsolicited(&ringing, &last_ring_urc);
 	
 	if (ringing) {
 		// Start ringing timer on first ring
@@ -360,8 +369,17 @@ void loop()
 			ringing_start = t;
 		}
 		
-		// Timeout after 30 seconds if not answered
-		// This handles both: user doesn't answer, and caller hangs up
+		// Check if caller hung up (no RING URC for 5 seconds)
+		// Modem sends RING every ~3 seconds, so 5 seconds means caller definitely hung up
+		if (last_ring_urc > 0 && (t - last_ring_urc > 5000)) {
+			Serial.println("No RING URC - caller hung up");
+			ringing = false;
+			oled_status_message = "";
+			oled_clear();
+		}
+		
+		// Timeout after 30 seconds if not answered (backup safety)
+		// This handles edge cases where RING detection fails
 		if (t - ringing_start > 30000) {
 			Serial.println("Ring timeout - stopping");
 			ringing = false;
@@ -574,6 +592,7 @@ void loop()
 			oled_print("ANSWERING", 0, 30);
 			Serial.println("answering");
 			lara_answer();
+			ringing = false;  // Stop ringing immediately when answering
 			break;
 		case LARA_CALLING:
 			oled_status_message = "HANGING UP";

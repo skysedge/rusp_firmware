@@ -40,7 +40,7 @@ int lara_on(
 
 // handle any unsolicited result codes that may have arrived
 // also passes lara's serial port through to the console and vice versa
-void lara_unsolicited(bool *ringing);
+void lara_unsolicited(bool *ringing, unsigned long *last_ring_time);
 
 // check if in a call, etc.
 lara_activity lara_status();

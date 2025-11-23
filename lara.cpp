@@ -138,7 +138,7 @@ int lara_on(
 
 
 // handle URCs and also serial passthrough
-void lara_unsolicited(bool *ringing)
+void lara_unsolicited(bool *ringing, unsigned long *last_ring_time)
 {
 	// we use a similar strategy to multiexpect() but make our parsing
 	// static because we cannot be busy-waiting here
@@ -155,6 +155,7 @@ void lara_unsolicited(bool *ringing)
 				switch (i) {
 				case 0:
 					*ringing = true;
+					*last_ring_time = millis();  // Update timestamp when RING received
 					break;
 				default:
 					break;
