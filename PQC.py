@@ -12,8 +12,8 @@ K1_2560 = 5
 K2_2560 = 11     
 K1_16U2 = 3     
 K2_16U2 = 7     
-prog = 36        #Orange
-progtest = 38        #Yellow
+prog1 = 36        #Orange
+prog2 = 38        #Yellow
 test = 40        #Brown
 
 GPIO.setmode(GPIO.BOARD)          #Sets pin numbering scheme (BOARD vs BCM)
@@ -21,8 +21,8 @@ GPIO.setup(K1_2560, GPIO.OUT)
 GPIO.setup(K2_2560, GPIO.OUT)   
 GPIO.setup(K1_16U2, GPIO.OUT)   
 GPIO.setup(K2_16U2, GPIO.OUT)   
-GPIO.setup(prog, GPIO.IN, pull_up_down=GPIO.PUD_UP)   
-GPIO.setup(progtest, GPIO.IN, pull_up_down=GPIO.PUD_UP)   
+GPIO.setup(prog1, GPIO.IN, pull_up_down=GPIO.PUD_UP)   
+GPIO.setup(prog2, GPIO.IN, pull_up_down=GPIO.PUD_UP)   
 GPIO.setup(test, GPIO.IN, pull_up_down=GPIO.PUD_UP)   
 
 def makeu2():
@@ -218,7 +218,7 @@ print('Ready')
 
 while True:
     try:
-        if GPIO.input(prog) == False:
+        if GPIO.input(prog1) == False:
             if makeu2():
                 if makebootloader():
                     print('COMPLETE. Reset MB in fixture and attach DB if not already done.')
@@ -227,7 +227,7 @@ while True:
             else:
                 print('Programming failed at 16U2 step')
 
-        if GPIO.input(progtest) == False:
+        if GPIO.input(prog2) == False:
             if makeusb():
                 serialtests()
                 print('Finished')
