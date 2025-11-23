@@ -136,7 +136,7 @@ def serialtests():
 
     # Wait for startup messages
     print("Waiting for startup messages...")
-    time.sleep(15)
+    time.sleep(20)
 
     # Send your commands
     send_command("at")
@@ -283,14 +283,14 @@ while True:
 
         if GPIO.input(prog2) == False:
             if makeusb():
-                serialtests()
-                print('Finished. TURN POWER SWITCH OFF before removing.')
+                #serialtests()
+                print('Finished flashing RUSP firmware via \'make usb\'.')
             else:
                 print('Firmware programming failed - skipping serial tests')
 
         if GPIO.input(test) == False:
             serialtests()
-            print('Finished')
+            print('Finished serial tests. TURN POWER SWITCH OFF before removing.')
 
 
     except KeyboardInterrupt: #looks for ctrl+C
