@@ -75,7 +75,7 @@ int epd_displayContacts(int n){
 			eink->print(CName);
 			eink->setCursor(col+25, row+12);	//space to phone number below contact name
 			eink->setFont();		//Font for contact phone number
-			for (int j = 0; j < (kc-2); j++){	//Count up to the highest stored numbre in CNumber
+			for (int j = 0; j < kc; j++){	//Display all digits in CNumber
 				eink->print(CNumber[j]);
 				if (j == 2 || j == 5){
 					eink->print("-");	//Format the phone number with dashes

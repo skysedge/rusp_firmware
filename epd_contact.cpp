@@ -19,20 +19,20 @@ void SDgetContact(int line) {
     bool preColon = false;
     bool exitNow = false;
     
+    // Clear the buffers FIRST to prevent old data corruption
+    for (int i = 0; i < 30; i++) {
+        CName[i] = 0;
+        CNumber[i] = 0;
+    }
+    kc = 0;
+    
     File myFile = SD.open("contacts.txt", FILE_READ);
     if (!myFile) {
         Serial.println("Failed to open contacts.txt");
-        // Clear the buffers
-        for (int i = 0; i < 30; i++) {
-            CName[i] = 0;
-            CNumber[i] = 0;
-        }
-        kc = 0;
         return;
     }
     
     myFile.seek(0);
-    kc = 0;  // Reset the contact phone number index
     
     // Navigate to the requested line
     for (int i = 0; i < (line - 1);) {
@@ -52,6 +52,12 @@ void SDgetContact(int line) {
             break;
         }
         cholder = myFile.read();
+        
+        // Check for end of line FIRST, before processing
+        if (cholder == '\n' || cholder == '\r') {
+            break;
+        }
+        
         if (preColon == false) {
             if (cholder == ':') {  // Detect colon
                 preColon = true;
@@ -67,20 +73,17 @@ void SDgetContact(int line) {
                 kc++;
             }
         }
-        if (cholder == '\n') {
-            break;
-        }
     }
     
-    // Clear the remainder of CName
-    while (m <= 30) {
+    // Clear the remainder of CName (only up to index 29, not 30!)
+    while (m < 30) {
         CName[m] = 0;
         m++;
     }
     
     // Truncate name to 11 chars to fit on ePD
     m = 11;
-    while (m <= 30) {
+    while (m < 30) {
         CName[m] = 0;
         m++;
     }

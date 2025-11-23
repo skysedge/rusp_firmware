@@ -69,6 +69,8 @@ unsigned long hook_last = 0;
 bool hook_pressed = false;
 unsigned long hook_press_start = 0;
 #define HOOK_HOLD_TIME 1000  // Must hold for 1 second
+// track if hook was pressed during current dial for speed dial
+bool hook_during_dial = false;
 // are we ringing the bell
 bool ringing = false;
 // when did ringing start
@@ -130,7 +132,6 @@ void isr_hall()
 {
 	pulsing = true;
 	pulses = 0;
-	delay(10);
 }
 
 
@@ -329,6 +330,13 @@ void loop()
 	
 	// Pulse effects LEDs while rotary dial is turning
 	if (pulsing) {
+		// Capture hook state at the very start of pulsing (only once per dial)
+		static bool hook_captured = false;
+		if (!hook_captured) {
+			hook_during_dial = (digitalRead(SW_HOOK) == LOW);
+			hook_captured = true;
+		}
+		
 		// Toggle LEDs at regular intervals for pulsing effect
 		if (t - last_led_toggle >= LED_PULSE_INTERVAL) {
 			last_led_toggle = t;
@@ -340,7 +348,10 @@ void loop()
 			}
 		}
 	} else {
-		// Not pulsing - ensure LEDs are off
+		// Not pulsing - ensure LEDs are off and reset capture flag
+		static bool hook_captured = false;
+		hook_captured = false;  // Reset for next dial
+		
 		if (led_effects_state) {
 			effects_leds_off();
 			led_effects_state = false;
@@ -458,8 +469,8 @@ void loop()
 			// Get the number the user entered.
 			int n = pulse2ascii(pulses) - '0';  // Convert to actual digit
 			
-			// Check if hook was held while dialing (Speed Dial mode)
-			bool speed_dial = (digitalRead(SW_HOOK) == LOW);
+			// Check if hook was pressed at start of dialing (Speed Dial mode)
+			bool speed_dial = hook_during_dial;
 			
 			if (n >= 0 && n <= 9) {
 				if (speed_dial) {
@@ -481,7 +492,7 @@ void loop()
 					
 					// Convert CNumber[] array to dial_buf string
 					dial_idx = 0;
-					for (int j = 0; j < kc - 2 && j < DIAL_BUF_LEN - 1; j++) {
+					for (int j = 0; j < kc && j < DIAL_BUF_LEN - 1; j++) {
 						dial_buf[dial_idx++] = CNumber[j] + '0';
 					}
 					dial_buf[dial_idx] = '\0';
@@ -515,7 +526,7 @@ void loop()
 					
 					// Convert CNumber[] array to dial_buf string
 					dial_idx = 0;
-					for (int j = 0; j < kc - 2 && j < DIAL_BUF_LEN - 1; j++) {
+					for (int j = 0; j < kc && j < DIAL_BUF_LEN - 1; j++) {
 						dial_buf[dial_idx++] = CNumber[j] + '0';
 					}
 					dial_buf[dial_idx] = '\0';
@@ -557,31 +568,47 @@ void loop()
 		// Reset the rotary dial variables.
 		pulsing = false;
 		pulses = 0;
+		hook_during_dial = false;  // Reset speed dial flag
 
 		enableInterrupt(SW_ROTARY, isr_rotary, FALLING);
 		enableInterrupt(SW_HALL, isr_hall, FALLING);
 	}
 
 	// Check if hook button is being held
-	if (hook_pressed) {
-		// Check if button is still pressed
-		if (digitalRead(SW_HOOK) == LOW) {
-			// Button still held - check if held long enough
-			if ((t - hook_press_start >= HOOK_HOLD_TIME) && !hook) {
-				// Held for 1 second - trigger action
+	// Skip hook processing in ALT mode (used for speed dial instead)
+	if (hook_pressed && digitalRead(SW_ALT) != LOW) {
+		// Check what state we're in to determine if we need to wait
+		lara_activity stat = lara_status();
+		
+		// For answering or hanging up, trigger immediately on button release
+		if (stat == LARA_RINGING || stat == LARA_CALLING) {
+			// Check if button was released
+			if (digitalRead(SW_HOOK) == HIGH) {
+				// Button released - trigger action immediately
 				hook = true;
-				Serial.println("hook held for 1 second - triggering action");
+				hook_pressed = false;
+				Serial.println("hook released - immediate action");
 			}
 		} else {
-			// Button released before 1 second
-			hook_pressed = false;
-			if (!hook) {
-				Serial.println("hook released too early - ignoring");
+			// For dialing (LARA_READY), require 1-second hold
+			if (digitalRead(SW_HOOK) == LOW) {
+				// Button still held - check if held long enough
+				if ((t - hook_press_start >= HOOK_HOLD_TIME) && !hook) {
+					// Held for 1 second - trigger action
+					hook = true;
+					Serial.println("hook held for 1 second - triggering action");
+				}
+			} else {
+				// Button released before 1 second
+				hook_pressed = false;
+				if (!hook) {
+					Serial.println("hook released too early - ignoring");
+				}
 			}
 		}
 	}
 
-	if (hook) {
+	if (hook && digitalRead(SW_ALT) != LOW) {
 		Serial.println("hook pressed");
 		oled_dialed_digits = "";  // Clear digit display on hook press
 		lara_activity stat = lara_status();
@@ -615,6 +642,10 @@ void loop()
 		}
 		hook = false;
 		hook_pressed = false;  // Reset the press tracking
+	} else if (hook && digitalRead(SW_ALT) == LOW) {
+		// In ALT mode - hook is used for speed dial, clear the flag
+		hook = false;
+		hook_pressed = false;
 	}
 }
 
