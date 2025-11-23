@@ -25,6 +25,17 @@ GPIO.setup(prog1, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 GPIO.setup(prog2, GPIO.IN, pull_up_down=GPIO.PUD_UP)   
 GPIO.setup(test, GPIO.IN, pull_up_down=GPIO.PUD_UP)   
 
+def find_serial_port():
+    """Find the first available /dev/ttyACM* port"""
+    ports = glob.glob('/dev/ttyACM*')
+    if ports:
+        ports.sort()  # Use the lowest numbered port
+        print(f"Found serial port: {ports[0]}")
+        return ports[0]
+    else:
+        print("ERROR: No /dev/ttyACM* ports found")
+        return None
+
 def makeu2():
     print('Switching to 16U2')
     GPIO.output(K1_16U2, GPIO.HIGH) 
@@ -60,18 +71,42 @@ def makebootloader():
     return True
 
 def makeusb():
-    print('Flashing RUSP firmware')
-    result = subprocess.run(["make", "usb"])
+    # Find the port before programming
+    port = find_serial_port()
+    if not port:
+        print("ERROR: No serial port found - device must be connected")
+        return False
+    
+    print(f'Flashing RUSP firmware using {port}')
+    result = subprocess.run(["make", "usb", f"PORT={port}"])
     if result.returncode != 0:
         print(f"ERROR: Failed to flash RUSP firmware - check connections")
         return False
     print("RUSP firmware flashed successfully")
-    time.sleep(1)
+    print("Waiting for device to re-enumerate...")
+    time.sleep(3)  # Give device time to reset and reconnect
+    
+    # Verify the port is available
+    port = find_serial_port()
+    if port:
+        print(f"Device ready on {port}")
+    else:
+        print("Warning: No serial port detected after programming")
+    
     return True
 
 def serialtests():
-    # Open the serial connection
-    ser = serial.Serial('/dev/ttyACM0', 115200, timeout=0.1)
+    # Find and open the serial connection
+    port = find_serial_port()
+    if not port:
+        print("Check that the device is connected and enumerated properly")
+        return False
+    
+    try:
+        ser = serial.Serial(port, 115200, timeout=0.1)
+    except serial.SerialException as e:
+        print(f"ERROR: Could not open {port}: {e}")
+        return False
 
     # Flag to control the reader thread
     running = True
@@ -121,10 +156,20 @@ def serialtests():
     running = False
     reader_thread.join(timeout=1)
     ser.close()
+    return True
 
 def tonetest():
-    # Open the serial connection
-    ser = serial.Serial('/dev/ttyACM0', 115200, timeout=0.1)
+    # Find and open the serial connection
+    port = find_serial_port()
+    if not port:
+        print("Check that the device is connected and enumerated properly")
+        return False
+    
+    try:
+        ser = serial.Serial(port, 115200, timeout=0.1)
+    except serial.SerialException as e:
+        print(f"ERROR: Could not open {port}: {e}")
+        return False
 
     # Flag to control the reader thread
     running = True
@@ -170,6 +215,7 @@ def tonetest():
     running = False
     reader_thread.join(timeout=1)
     ser.close()
+    return True
 
 
 
