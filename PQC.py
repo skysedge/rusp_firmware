@@ -164,7 +164,7 @@ def serialtests():
     print("1")
     time.sleep(1)
     send_command("AT+UTGN=1000,1000,100,0") #make tone
-i   time.sleep(6)
+    time.sleep(6)
     print("TURN OFF MB NOW")
     time.sleep()
 
