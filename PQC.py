@@ -96,6 +96,7 @@ def makeusb():
     return True
 
 def serialtests():
+    """Full test sequence including first-time CODEC configuration"""
     # Find and open the serial connection
     port = find_serial_port()
     if not port:
@@ -103,7 +104,11 @@ def serialtests():
         return False
     
     try:
-        ser = serial.Serial(port, 115200, timeout=0.1)
+        ser = serial.Serial(port, 115200, timeout=0.1,
+                           xonxoff=False,    # Disable software flow control
+                           rtscts=False,     # Disable hardware (RTS/CTS) flow control  
+                           dsrdtr=False)     # Disable hardware (DSR/DTR) flow control
+        print(f"Opened {port} with settings: 115200 8N1, no flow control")
     except serial.SerialException as e:
         print(f"ERROR: Could not open {port}: {e}")
         return False
@@ -129,85 +134,29 @@ def serialtests():
     reader_thread.start()
 
     def send_command(cmd):
+        command_bytes = f"{cmd}\r".encode()
         print(f"Sending: {cmd}")
-        bytes_written = ser.write(f"{cmd}\r".encode())
+        print(f"  Bytes (hex): {command_bytes.hex()}")
+        bytes_written = ser.write(command_bytes)
+        ser.flush()  # Ensure data is sent
         print(f"  Wrote {bytes_written} bytes")
-        time.sleep(0.5)  # Wait longer for response
+        time.sleep(2.5)  # Increased to give more time for response
 
     # Wait for startup messages
     print("Waiting for startup messages...")
     time.sleep(20)
 
     # Send your commands
-    send_command("at")
-    time.sleep(1)
-    send_command("AT+UEXTDCONF=0,1") #CODEC first time configuration
-    time.sleep(2)
+    send_command("AT")
+    time.sleep(10)  # Longer delay needed before CODEC config command
+    # NOTE: This command needs significant delay after the first AT command
+    # Shorter delays (2-5 sec) cause it to return ERROR instead of OK
+    send_command("AT+UEXTDCONF=0,1")
+    time.sleep(3)  # This command takes longer to process
     send_command("AT+CFUN=16") #Reset modem
-    time.sleep(10)
-    print("sending tone to speaker in 3")
-    time.sleep(1)
-    print("2")
-    time.sleep(1)
-    print("1")
-    time.sleep(1)
-    send_command("AT+UTGN=1000,1000,100,0") #make tone
-
-    # Give more time for final responses
-    time.sleep(2)
-
-    # Clean up
-    running = False
-    reader_thread.join(timeout=1)
-    ser.close()
-    return True
-
-def tonetest():
-    # Find and open the serial connection
-    port = find_serial_port()
-    if not port:
-        print("Check that the device is connected and enumerated properly")
-        return False
-    
-    try:
-        ser = serial.Serial(port, 115200, timeout=0.1)
-    except serial.SerialException as e:
-        print(f"ERROR: Could not open {port}: {e}")
-        return False
-
-    # Flag to control the reader thread
-    running = True
-
-    def read_serial():
-        """Continuously read and display messages from the device"""
-        while running:
-            try:
-                if ser.in_waiting:
-                    response = ser.readline().decode('utf-8', errors='ignore').strip()
-                    if response:
-                        print(f"Device: {response}")
-                time.sleep(0.01)
-            except (OSError, serial.SerialException) as e:
-                print(f"Serial read error: {e}")
-                break
-
-    # Start the reader thread
-    reader_thread = threading.Thread(target=read_serial, daemon=True)
-    reader_thread.start()
-
-    def send_command(cmd):
-        print(f"Sending: {cmd}")
-        bytes_written = ser.write(f"{cmd}\r".encode())
-        print(f"  Wrote {bytes_written} bytes")
-        time.sleep(0.5)  # Wait longer for response
-
-    # Wait for startup messages
-    print("Waiting for startup messages...")
     time.sleep(15)
-
-    # Send your commands
-    send_command("at")
-    time.sleep(1)
+    send_command("AT")
+    time.sleep(1) 
     print("sending tone to speaker in 3")
     time.sleep(1)
     print("2")
@@ -215,8 +164,6 @@ def tonetest():
     print("1")
     time.sleep(1)
     send_command("AT+UTGN=1000,1000,100,0") #make tone
-
-    # Give more time for final responses
     time.sleep(2)
 
     # Clean up
@@ -224,7 +171,6 @@ def tonetest():
     reader_thread.join(timeout=1)
     ser.close()
     return True
-
 
 
 def reset_usb_device(vendor_id, product_id):
@@ -282,9 +228,10 @@ while True:
                 print('Programming failed at 16U2 step')
 
         if GPIO.input(prog2) == False:
-            if makeusb():
-                #serialtests()
+            if makeusb(): 
                 print('Finished flashing RUSP firmware via \'make usb\'.')
+                serialtests()
+                print('Finished serial tests. TURN POWER SWITCH OFF before removing.')
             else:
                 print('Firmware programming failed - skipping serial tests')
 
