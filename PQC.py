@@ -164,7 +164,9 @@ def serialtests():
     print("1")
     time.sleep(1)
     send_command("AT+UTGN=1000,1000,100,0") #make tone
-    time.sleep(2)
+i   time.sleep(6)
+    print("TURN OFF MB NOW")
+    time.sleep()
 
     # Clean up
     running = False
