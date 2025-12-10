@@ -200,7 +200,7 @@ def reset_usb_device(vendor_id, product_id):
 
 
 
-print('Cycling relays')
+print('Cycling relays.')
 GPIO.output(K1_2560, GPIO.HIGH) 
 GPIO.output(K2_2560, GPIO.HIGH)
 time.sleep(.1)             
@@ -216,14 +216,21 @@ time.sleep(.1)
 GPIO.output(K1_16U2, GPIO.LOW) 
 GPIO.output(K2_16U2, GPIO.LOW)
 time.sleep(.5)            
-print('Ready')
+print('Ready.\n')
+print('Button 1: Flash 16U2 AND THEN bootloader on 1280.')
+print('Button 2: Flash RUSP programming on 1280 AND THEN run serial tests with CODEC config')
+print('Button 3: Serial tests and tone generator check only (not normally needed)\n\n')
+
+print('TO START... Insert bare and PRESS button 1. May need to PUSH on MB.')
 
 while True:
     try:
         if GPIO.input(prog1) == False:
             if makeu2():
                 if makebootloader():
-                    print('COMPLETE. Reset MB in fixture and attach DB if not already done. POWER SWITCH ON.')
+                    print('\n')
+                    print('STEP 1 COMPLETE. REMOVE MB from fixture, ATTACH DB w/ SD inserted, TURN ON power switch, and REINSERT.\n\n')
+                    print('THEN, PRESS button \'2\' to flash RUSP program to 1280 and run serial/codec tests.\n')
                 else:
                     print('Programming failed at bootloader step')
             else:
