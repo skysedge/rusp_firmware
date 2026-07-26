@@ -23,6 +23,26 @@ PULSE_DEBUG_DIR := tools/pulse_debounce_debug
 PULSE_DEBUG_BOARD ?= MegaCore:avr:2560
 PULSE_DEBUG_BOARD_OPTS ?= clock=7_3728MHz_external,baudrate=${BAUD}
 PULSE_MONITOR_DIR := tools/pulse_monitor
+MEMCHECK_DIR := tools/memcheck
+
+# RAM budget (see tools/memcheck/memcheck.py). The ATmega2560 has 8192 bytes
+# of SRAM shared by globals, heap and stack; these ceilings exist so growth
+# has to be a decision rather than a discovery.
+#
+# Ratchet these down as savings land. Raising one is how 85% happened.
+#   .data — copied from flash to RAM at boot. Dominated by string literals
+#           that are not in PROGMEM, which is what makes it worth attacking.
+#   .bss  — zeroed globals. Dominated by eink_buffer, the SD library and
+#           dial_dbg_q.
+RAM_DATA_MAX ?= 1028
+RAM_BSS_MAX ?= 3150
+
+# Explicit build path so memcheck can find the ELF without guessing at the
+# arduino-cli sketch cache hash.
+BUILD_DIR ?= build
+ARDUINO_DATA_DIRS := ${HOME}/.arduino15 ${HOME}/Library/Arduino15
+AVR_SIZE ?= $(firstword $(wildcard $(foreach d,${ARDUINO_DATA_DIRS},\
+	$(d)/packages/arduino/tools/avr-gcc/*/bin/avr-size)))
 
 
 default: compile usb
@@ -46,8 +66,21 @@ pulse-debug: pulse-debug-compile
 		${PULSE_DEBUG_DIR}
 
 pulse-monitor-test:
-	cd ${PULSE_MONITOR_DIR} && python3 -m unittest \
-		test_pulse_analysis.py test_dial_extract.py -v
+	cd ${PULSE_MONITOR_DIR} && python3 -m unittest discover -p 'test_*.py' -v
+
+memcheck-test:
+	cd ${MEMCHECK_DIR} && python3 -m unittest discover -p 'test_*.py' -v
+
+# All host-side tests.
+test: pulse-monitor-test memcheck-test
+
+# Compile to a known path and fail if the firmware exceeds the RAM budget.
+memcheck:
+	"${ARDUINO_CLI}" compile -b ${BOARD} --board-options ${BOARD_OPTS} \
+		--build-path ${BUILD_DIR}
+	python3 ${MEMCHECK_DIR}/memcheck.py ${BUILD_DIR}/rusp_firmware.ino.elf \
+		--avr-size "${AVR_SIZE}" \
+		--data-max ${RAM_DATA_MAX} --bss-max ${RAM_BSS_MAX}
 
 # Requires: python3 -m venv tools/pulse_monitor/.venv && \
 #   tools/pulse_monitor/.venv/bin/pip install -r tools/pulse_monitor/requirements.txt

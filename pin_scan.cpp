@@ -26,8 +26,21 @@
 #define PIN_SCAN_FULL_MS 5000
 #endif
 
+/*
+ * Held in flash, not RAM. An array of `const char *name` puts both the
+ * pointer table and every name string into .data, which on this part is
+ * SRAM. Inline char arrays plus PROGMEM move the whole thing to flash at the
+ * cost of padding each name to the longest one.
+ *
+ * PIN_NAME_LEN must fit the longest name below ("LAMBDA", "NONLOC",
+ * "OFFSIG", "EPDRST" are 6) plus a terminator. A name that does not fit is
+ * silently truncated by the initialiser, so grow this if you add a longer
+ * one.
+ */
+#define PIN_NAME_LEN 7
+
 struct PinWatch {
-	const char *name;
+	char name[PIN_NAME_LEN];
 	uint8_t pin;
 };
 
@@ -39,7 +52,7 @@ struct PinWatch {
  * PINCHG edges go to PINS.LOG on SD (and Serial). Full PINS snapshots are
  * Serial-only — 1 Hz SD open/close of every pin stalled the console.
  */
-static const PinWatch WATCH[] = {
+static const PinWatch WATCH[] PROGMEM = {
 	{"CHG", CHG_STAT},
 	{"ROT", SW_ROTARY},
 	{"HALL", SW_HALL},
@@ -118,16 +131,18 @@ static void pin_scan_log_line(const char *tag, bool to_sd)
 	 */
 	char chunk[96];
 	size_t used = 0;
-	int n = snprintf(chunk, sizeof(chunk), "t=%lu %s", (unsigned long)millis(), tag);
+	int n = snprintf_P(chunk, sizeof(chunk), PSTR("t=%lu %s"), (unsigned long)millis(), tag);
 	if (n < 0)
 		return;
 	used = (size_t)n;
 
 	for (unsigned i = 0; i < WATCH_N; i++) {
 		char piece[16];
-		int pn = snprintf(
-			piece, sizeof(piece), " %s=%u",
-			WATCH[i].name, (unsigned)pin_level(WATCH[i].pin)
+		PinWatch w;
+		memcpy_P(&w, &WATCH[i], sizeof(w));
+		int pn = snprintf_P(
+			piece, sizeof(piece), PSTR(" %s=%u"),
+			w.name, (unsigned)pin_level(w.pin)
 		);
 		if (pn < 0)
 			continue;
@@ -135,8 +150,8 @@ static void pin_scan_log_line(const char *tag, bool to_sd)
 			pin_scan_emit_serial(chunk);
 			if (to_sd)
 				pin_scan_emit_sd(chunk);
-			n = snprintf(
-				chunk, sizeof(chunk), "t=%lu %s",
+			n = snprintf_P(
+				chunk, sizeof(chunk), PSTR("t=%lu %s"),
 				(unsigned long)millis(), tag
 			);
 			if (n < 0)
@@ -161,7 +176,9 @@ void pin_scan_init(void)
 	/* Serial snapshot only — SD open/close here wedged the card for sd cat. */
 	pin_scan_log_line("PINS", false);
 	for (unsigned i = 0; i < WATCH_N; i++)
-		last_level[i] = pin_level(WATCH[i].pin);
+		last_level[i] = pin_level(
+			(uint8_t)pgm_read_byte(&WATCH[i].pin)
+		);
 	have_last = true;
 }
 
@@ -180,13 +197,15 @@ void pin_scan_service(unsigned long now_ms)
 	delta[0] = '\0';
 
 	for (unsigned i = 0; i < WATCH_N; i++) {
-		uint8_t v = pin_level(WATCH[i].pin);
+		PinWatch w;
+		memcpy_P(&w, &WATCH[i], sizeof(w));
+		uint8_t v = pin_level(w.pin);
 		if (have_last && v != last_level[i]) {
 			changed = true;
 			char piece[24];
-			int pn = snprintf(
-				piece, sizeof(piece), " %s:%u>%u",
-				WATCH[i].name,
+			int pn = snprintf_P(
+				piece, sizeof(piece), PSTR(" %s:%u>%u"),
+				w.name,
 				(unsigned)last_level[i], (unsigned)v
 			);
 			if (pn > 0 && dused + (size_t)pn + 1 < sizeof(delta)) {
@@ -200,8 +219,8 @@ void pin_scan_service(unsigned long now_ms)
 
 	if (changed && delta[0] != '\0') {
 		char line[120];
-		snprintf(
-			line, sizeof(line), "t=%lu PINCHG%s",
+		snprintf_P(
+			line, sizeof(line), PSTR("t=%lu PINCHG%s"),
 			(unsigned long)now_ms, delta
 		);
 		pin_scan_emit_serial(line);

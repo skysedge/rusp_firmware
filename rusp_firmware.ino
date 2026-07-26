@@ -38,6 +38,7 @@ inline void* operator new(size_t, void* ptr) { return ptr; }
 #include "phone_format.h"
 #include "pin_scan.h"
 #include "chg_hist.h"
+#include "last_number.h"
 
 // External declarations for contact data (from epd_contact.cpp)
 extern char CName[30];
@@ -82,9 +83,7 @@ extern int pg;
 
 // ePaper display object (using static storage, not heap)
 // We use a static buffer and placement new to avoid dynamic allocation issues
-static uint8_t eink_buffer[sizeof(GxEPD2_BW<GxEPD2_290_flex, MAX_HEIGHT(GxEPD2_290_flex)>)];
-static GxEPD2_BW<GxEPD2_290_flex, MAX_HEIGHT(GxEPD2_290_flex)> *eink = nullptr;
-static bool eink_constructed = false;
+GxEPD2_BW<GxEPD2_290_flex, MAX_HEIGHT(GxEPD2_290_flex)> *eink = nullptr;
 
 // ugly global variables
 //
@@ -176,17 +175,42 @@ bool outbound_call_active = false;
 bool saw_in_call_cpas = false;
 unsigned long last_call_cpas_poll_ms = 0;
 #define CALL_CPAS_POLL_MS 1000
+/*
+ * Consecutive AT+CLCC polls reporting no calls before the session is
+ * declared over. Mirrors tools/pulse_monitor/call_end_detect.py.
+ * Needed because a refused dial never reaches an active state, so
+ * saw_in_call_cpas stays false and nothing else can clear the session.
+ */
+#define CLCC_ABSENT_LIMIT 3
+uint8_t clcc_absent_polls = 0;
 // when did ringing start
 unsigned long ringing_start = 0;
-// when did we last receive a RING URC from the modem
-unsigned long last_ring_urc = 0;
+/*
+ * When the modem last proved an incoming call is still ringing, from a RING
+ * URC *or* +UCALLSTAT: 1,4. Mirrors is_incoming_ring_evidence() in
+ * tools/pulse_monitor/call_end_detect.py.
+ *
+ * Not RING-only: a live capture recorded a whole incoming call announced by
+ * +UCALLSTAT: 1,4 with zero RING URCs, which left this at 0 and silently
+ * disabled the expiry check below that is guarded on it.
+ *
+ * 0 means "no baseline yet". call_session_end() must restore that, or a
+ * timestamp left over from an earlier call makes the next ring look
+ * instantly stale and the phone stops alerting entirely.
+ */
+unsigned long last_ring_evidence_ms = 0;
+/*
+ * Silence that means the caller is gone. Two measured ring cadences (5.5-6 s
+ * on this modem), so one dropped URC cannot end a live call — URCs do arrive
+ * corrupted here. The previous 5000 ms sat below the real cadence and fired
+ * between every pair of rings.
+ */
+#define RING_EVIDENCE_TIMEOUT_MS 12000
+/* Hard cap per ring. Backstop only; reaching it means the above failed. */
+#define RING_MAX_MS 30000
 // Last effective / physical call-type modes (for change detection + logs).
 CallMode prev_mode = CALL_MODE_NONLOCAL;
 CallMode prev_phys_mode = CALL_MODE_NONLOCAL;
-// OLED digit feedback display
-String oled_dialed_digits = "";
-unsigned long last_digit_display_time = 0;
-#define DIGIT_DISPLAY_TIMEOUT 5000  // Clear after 5 seconds
 // OLED status message display
 String oled_status_message = "";
 unsigned long last_status_message_time = 0;
@@ -237,8 +261,19 @@ char pulse2ascii(char pulse_count);
 
 /**
  * Log a call/dial troubleshooting line to Serial and DIAL.LOG.
+ *
+ * The message and format strings live in flash, not RAM. On AVR a plain
+ * string literal is copied into .data at startup and occupies SRAM for the
+ * life of the program; with ~40 log sites that added up to well over a
+ * kilobyte of the 8 KB total. The _P variants read from flash instead, and
+ * the call_log / call_logf macros below wrap the literal in PSTR() so call
+ * sites keep their ordinary shape.
+ *
+ * Consequence to respect: these take flash pointers. Passing a RAM string
+ * (a char buffer, a runtime-built message) reads from the wrong address
+ * space and prints garbage. Use call_log_ram() for those.
  */
-static void call_log(const char *msg)
+static void call_log_ram(const char *msg)
 {
 	if (msg == nullptr)
 		return;
@@ -246,15 +281,71 @@ static void call_log(const char *msg)
 	sd_log_append(msg);
 }
 
-static void call_logf(const char *fmt, ...)
+static void call_log_P(const char *msg)
+{
+	if (msg == nullptr)
+		return;
+	char line[96];
+	strncpy_P(line, msg, sizeof(line) - 1);
+	line[sizeof(line) - 1] = '\0';
+	call_log_ram(line);
+}
+
+static void call_logf_P(const char *fmt, ...)
 {
 	char line[96];
 	va_list ap;
 	va_start(ap, fmt);
-	vsnprintf(line, sizeof(line), fmt, ap);
+	vsnprintf_P(line, sizeof(line), fmt, ap);
 	va_end(ap);
-	call_log(line);
+	call_log_ram(line);
 }
+
+#define call_log(msg) call_log_P(PSTR(msg))
+#define call_logf(fmt, ...) call_logf_P(PSTR(fmt), __VA_ARGS__)
+
+
+/**
+ * Clear all state for the current call session.
+ *
+ * Every teardown path must clear the same fields, including the CLCC
+ * absence counter — a count left over from the previous call would make the
+ * next session declare itself over early.
+ */
+static void call_session_end(const char *reason)
+{
+	outbound_call_active = false;
+	saw_in_call_cpas = false;
+	ringing = false;
+	incoming_ui_shown = false;
+	clcc_absent_polls = 0;
+	last_ring_evidence_ms = 0;
+	call_logf(
+		"t=%lu CALL_SESSION_END %s",
+		(unsigned long)millis(), reason ? reason : "?"
+	);
+}
+
+
+/**
+ * Start tracking a call just placed or answered. Only called after the modem
+ * has acknowledged ATD/ATA, so a refused call never opens a session.
+ */
+static void call_session_begin(const char *reason)
+{
+	outbound_call_active = true;
+	saw_in_call_cpas = false;
+	ringing = false;
+	incoming_ui_shown = false;
+	clcc_absent_polls = 0;
+	last_ring_evidence_ms = 0;
+	last_call_cpas_poll_ms = millis();
+	call_logf(
+		"t=%lu CALL_SESSION_BEGIN %s",
+		(unsigned long)millis(), reason ? reason : "?"
+	);
+}
+
 
 static int ui_signal_bars_now(unsigned long now_ms)
 {
@@ -350,14 +441,23 @@ static void ui_note_activity(void)
 		ui_wake();
 }
 
-static void ui_set_status(const char *status)
+/*
+ * Status text lives in flash for the same reason the log strings do. Takes a
+ * flash pointer: a RAM string passed here reads from the wrong address space
+ * and renders garbage on the panel.
+ */
+static void ui_set_status_P(const char *status)
 {
-	if (status == nullptr)
-		status = "";
-	strncpy(ui_status, status, sizeof(ui_status) - 1);
-	ui_status[sizeof(ui_status) - 1] = '\0';
+	if (status == nullptr) {
+		ui_status[0] = '\0';
+	} else {
+		strncpy_P(ui_status, status, sizeof(ui_status) - 1);
+		ui_status[sizeof(ui_status) - 1] = '\0';
+	}
 	ui_refresh();
 }
+
+#define ui_set_status(status) ui_set_status_P(PSTR(status))
 
 /**
  * Enqueue a dial debug event. Interrupts must already be masked / in ISR.
@@ -395,9 +495,9 @@ void dial_dbg_flush()
 			dial_dbg_dropped = 0;
 			interrupts();
 			if (dropped) {
-				snprintf(
+				snprintf_P(
 					line, sizeof(line),
-					"t=%lu DROP dbg_q=%u",
+					PSTR("t=%lu DROP dbg_q=%u"),
 					(unsigned long)millis(),
 					(unsigned)dropped
 				);
@@ -415,28 +515,35 @@ void dial_dbg_flush()
 		dial_dbg_tail = (uint8_t)((dial_dbg_tail + 1) % DIAL_DBG_QUEUE_LEN);
 		interrupts();
 
-		const char *name = "?";
+		/*
+		 * Flash pointers, printed with %S (capital) rather than %s.
+		 * Mixing the two silently prints garbage, so the format strings
+		 * below and these assignments must change together.
+		 */
+		const char *name = PSTR("?");
 		switch (ev.type) {
-		case DDBG_HALL_SEEN: name = "HALL_SEEN"; break;
-		case DDBG_COMMIT_REG: name = "COMMIT_REG"; break;
-		case DDBG_COMMIT_FALLBACK: name = "COMMIT_FALLBACK"; break;
-		case DDBG_DIGIT: name = "DIGIT"; break;
-		case DDBG_QUEUE_DROP: name = "DIGIT_Q_DROP"; break;
-		case DDBG_DISCARD: name = "DISCARD"; break;
+		case DDBG_HALL_SEEN: name = PSTR("HALL_SEEN"); break;
+		case DDBG_COMMIT_REG: name = PSTR("COMMIT_REG"); break;
+		case DDBG_COMMIT_FALLBACK:
+			name = PSTR("COMMIT_FALLBACK");
+			break;
+		case DDBG_DIGIT: name = PSTR("DIGIT"); break;
+		case DDBG_QUEUE_DROP: name = PSTR("DIGIT_Q_DROP"); break;
+		case DDBG_DISCARD: name = PSTR("DISCARD"); break;
 		default: break;
 		}
 		if (ev.ascii) {
-			snprintf(
+			snprintf_P(
 				line, sizeof(line),
-				"t=%lu %s pulses=%u ascii=%c dt=%u hall=%u",
+				PSTR("t=%lu %S pulses=%u ascii=%c dt=%u hall=%u"),
 				(unsigned long)ev.t_ms, name,
 				(unsigned)ev.pulses, ev.ascii,
 				(unsigned)ev.dt_ms, (unsigned)ev.hall_level
 			);
 		} else {
-			snprintf(
+			snprintf_P(
 				line, sizeof(line),
-				"t=%lu %s pulses=%u dt=%u hall=%u",
+				PSTR("t=%lu %S pulses=%u dt=%u hall=%u"),
 				(unsigned long)ev.t_ms, name,
 				(unsigned)ev.pulses,
 				(unsigned)ev.dt_ms, (unsigned)ev.hall_level
@@ -886,13 +993,6 @@ char pulse2ascii(char pulse_count)
 
 
 
-void show_dialed_digit_on_oled(char digit)
-{
-	oled_dialed_digits += digit;
-	last_digit_display_time = millis();
-}
-
-
 /**
  * Apply one completed dial digit (UI / mode / call side effects).
  *
@@ -909,7 +1009,6 @@ void handle_completed_digit(char pulse_count, bool speed_dial_hook)
 	noInterrupts();
 	dial_dbg_push_locked(DDBG_DIGIT, pulse_count, entered_digit, 0);
 	interrupts();
-	show_dialed_digit_on_oled(entered_digit);
 	poll_dial_digit_completion();
 
 	call_logf(
@@ -955,7 +1054,8 @@ void handle_completed_digit(char pulse_count, bool speed_dial_hook)
 
 				delay(500);
 				poll_dial_digit_completion();
-				int rc = lara_dial(dial_buf);
+				last_number_store(dial_buf);
+				int rc = lara_dial(dial_buf, sizeof(dial_buf));
 				call_logf(
 					"t=%lu SPEED_DIAL_ATD rc=%d",
 					(unsigned long)millis(), rc
@@ -1054,7 +1154,7 @@ void setup()
 	Serial.begin(115200);
 
 	// Print firmware version
-	Serial.print("RUSP Firmware v");
+	Serial.print(F("RUSP Firmware v"));
 	Serial.println(FIRMWARE_VERSION);
 
 	pinMode(LED_STAT, OUTPUT);
@@ -1108,7 +1208,7 @@ void setup()
 	digitalWrite(LL_OE, HIGH);
 
 	char ver_line[24];
-	snprintf(ver_line, sizeof(ver_line), "RUSP v%s", FIRMWARE_VERSION);
+	snprintf_P(ver_line, sizeof(ver_line), PSTR("RUSP v%s"), FIRMWARE_VERSION);
 
 	// SD before OLED: SD.begin drops SPI clock for the card.
 	sd_init(&Serial);
@@ -1121,9 +1221,9 @@ void setup()
 	if (sd_is_ready()) {
 		oled_print_status("SD card", "Ready");
 		char banner[80];
-		snprintf(
+		snprintf_P(
 			banner, sizeof(banner),
-			"t=%lu BOOT rusp_v%s dial_debug=1",
+			PSTR("t=%lu BOOT rusp_v%s dial_debug=1"),
 			(unsigned long)millis(), FIRMWARE_VERSION
 		);
 		sd_log_append(banner);
@@ -1136,7 +1236,7 @@ void setup()
 	delay(500);
 
 	oled_print_status("Cellular", "Starting modem");
-	Serial.println("hello! turning LARA on");
+	Serial.println(F("hello! turning LARA on"));
 	digitalWrite(LED_STAT, HIGH);
 	int modem_rc = lara_on(&Serial1, &Serial, 10000);
 	digitalWrite(LED_STAT, LOW);
@@ -1148,12 +1248,12 @@ void setup()
 	delay(500);
 
 	oled_print_status("E-ink", "Splash screen");
-	Serial.println("Displaying startup splash screen...");
+	Serial.println(F("Displaying startup splash screen..."));
 	epd_splash();
 	sd_recover_spi();
 	oled_reclaim_spi();
 
-	Serial.println("Startup complete!");
+	Serial.println(F("Startup complete!"));
 	chg_hist_boot_dump(&Serial);
 	{
 		int chg0 = battery_chg_stat_raw();
@@ -1164,9 +1264,9 @@ void setup()
 	Serial.println(F("SD over serial: sd help | sd ls | sd cat DIAL.LOG"));
 	if (sd_is_ready()) {
 		char ready_line[48];
-		snprintf(
+		snprintf_P(
 			ready_line, sizeof(ready_line),
-			"t=%lu READY", (unsigned long)millis()
+			PSTR("t=%lu READY"), (unsigned long)millis()
 		);
 		sd_log_append(ready_line);
 	}
@@ -1342,13 +1442,6 @@ void loop()
 	}
 
 #if !KEEP_OLED_DISPLAY
-	// Clear OLED digit display after timeout
-	if (oled_dialed_digits.length() > 0 &&
-	    (t - last_digit_display_time > DIGIT_DISPLAY_TIMEOUT)) {
-		oled_dialed_digits = "";
-		oled_clear();
-	}
-
 	// Clear OLED status message after timeout
 	if (oled_status_message.length() > 0 &&
 	    (t - last_status_message_time > STATUS_MESSAGE_TIMEOUT)) {
@@ -1405,7 +1498,6 @@ void loop()
 		if (!DISABLE_CALL_TYPE_MODES) {
 			dial_idx = 0;
 			dial_buf[dial_idx] = 0;
-			oled_dialed_digits = "";
 #if !KEEP_OLED_DISPLAY
 			oled_clear();
 #endif
@@ -1415,7 +1507,26 @@ void loop()
 
 	bool call_ended_urc = false;
 	int ucall_stat = -1;
-	lara_unsolicited(&ringing, &last_ring_urc, &call_ended_urc, &ucall_stat);
+	const bool was_ringing = ringing;
+	lara_unsolicited(
+		&ringing, &last_ring_evidence_ms, &call_ended_urc, &ucall_stat
+	);
+	const bool rang_this_drain = ringing && !was_ringing;
+	/*
+	 * End first, then apply the latest phase. One drain can deliver a
+	 * disconnect and the ring of the *next* call together; ending
+	 * afterwards cleared the ringing flag that call had just set.
+	 *
+	 * The stashed URCs carry no ordering, so a ring seen in the same drain
+	 * is kept: a spurious ring is cleared by the 5 s no-URC timeout below,
+	 * whereas a dropped one silently loses an incoming call.
+	 */
+	if (call_ended_urc) {
+		call_session_end("NO CARRIER or UCALLSTAT:6");
+		ui_set_status("Call ended");
+		if (rang_this_drain)
+			ringing = true;
+	}
 	/*
 	 * Drive call-phase UI from +UCALLSTAT (see call_phase.py):
 	 * 2 Dialing, 3 Ringing (far end), 4 Incoming, 0/7 In call, 6 ended.
@@ -1436,6 +1547,13 @@ void loop()
 			break;
 		case 4: /* MT ringing */
 			ringing = true;
+			/*
+			 * Counts as ring liveness. Some networks announce an
+			 * incoming call with this and never send a bare RING;
+			 * without stamping here the expiry check below has no
+			 * baseline and can never end the ring.
+			 */
+			last_ring_evidence_ms = t;
 			ui_set_status("Incoming");
 			incoming_ui_shown = true;
 			break;
@@ -1448,22 +1566,12 @@ void loop()
 			ui_set_status("In call");
 			break;
 		case 6: /* disconnected */
-			call_ended_urc = true;
+			call_session_end("UCALLSTAT:6");
+			ui_set_status("Call ended");
 			break;
 		default:
 			break;
 		}
-	}
-	if (call_ended_urc) {
-		outbound_call_active = false;
-		saw_in_call_cpas = false;
-		ringing = false;
-		incoming_ui_shown = false;
-		call_logf(
-			"t=%lu CALL_ENDED_URC (NO CARRIER or UCALLSTAT:6)",
-			(unsigned long)millis()
-		);
-		ui_set_status("Call ended");
 	}
 
 	/*
@@ -1472,13 +1580,25 @@ void loop()
 	 * 0 = active (answered). Also catches answer if +UCALLSTAT was
 	 * swallowed during an earlier AT expect (now also stashed).
 	 */
-	if (outbound_call_active
+	/*
+	 * Ringing is polled too, not just outbound. An incoming call whose
+	 * cancel URC was lost had nothing to reconcile against and the ringer
+	 * ran ~24 s past the caller hanging up, stopped only by RING_MAX_MS.
+	 * The same poll already tears an outbound call down correctly when its
+	 * end URC goes missing. See call_end_detect.clcc_absent_ends_call().
+	 */
+	if ((outbound_call_active || ringing)
 	    && (t - last_call_cpas_poll_ms >= CALL_CPAS_POLL_MS)) {
 		last_call_cpas_poll_ms = t;
 		int clcc = lara_clcc_stat();
+		if (clcc >= 0)
+			clcc_absent_polls = 0;
+		else if (clcc_absent_polls < CLCC_ABSENT_LIMIT)
+			clcc_absent_polls++;
 		call_logf(
-			"t=%lu CLCC %d",
-			(unsigned long)millis(), clcc
+			"t=%lu CLCC %d absent=%u",
+			(unsigned long)millis(), clcc,
+			(unsigned)clcc_absent_polls
 		);
 		if (clcc == 0) {
 			saw_in_call_cpas = true;
@@ -1491,35 +1611,17 @@ void loop()
 			ui_set_status("Dialing");
 		} else if (clcc == 4) {
 			ringing = true;
+			last_ring_evidence_ms = t;
 			incoming_ui_shown = true;
 			ui_set_status("Incoming");
-		} else if (clcc < 0 && saw_in_call_cpas) {
-			outbound_call_active = false;
-			saw_in_call_cpas = false;
-			ringing = false;
-			incoming_ui_shown = false;
-			call_logf(
-				"t=%lu CALL_ENDED_CLCC (was active, now none)",
-				(unsigned long)millis()
-			);
-			ui_set_status("Call ended");
-		} else {
+		} else if (clcc_absent_polls >= CLCC_ABSENT_LIMIT) {
 			/*
-			 * Backup hangup: CPAS ready after we have seen active.
-			 * Do not treat CPAS:4 alone as answered.
+			 * CLCC says there is no call. This does not require the
+			 * call to have been active first — that condition is
+			 * exactly what left a refused dial stuck on "Dialing".
 			 */
-			lara_activity cpas = lara_status();
-			if (saw_in_call_cpas && cpas == LARA_READY) {
-				outbound_call_active = false;
-				saw_in_call_cpas = false;
-				ringing = false;
-				incoming_ui_shown = false;
-				call_logf(
-					"t=%lu CALL_ENDED_CPAS (was in-call, now ready)",
-					(unsigned long)millis()
-				);
-				ui_set_status("Call ended");
-			}
+			call_session_end("CLCC reports no calls");
+			ui_set_status("Call ended");
 		}
 	}
 
@@ -1529,21 +1631,22 @@ void loop()
 			ringing_start = t;
 		}
 
-		// Check if caller hung up (no RING URC for 5 seconds)
-		// Modem sends RING every ~3 seconds, so 5 seconds means caller definitely hung up
-		if (last_ring_urc > 0 && (t - last_ring_urc > 5000)) {
-			call_log("RING_END no URC (caller hung up)");
-			ringing = false;
-			incoming_ui_shown = false;
+		/*
+		 * Caller gone: no ring evidence for RING_EVIDENCE_TIMEOUT_MS.
+		 * Zero means nothing has been stamped yet, so there is no
+		 * baseline to measure; t < last means millis() wrapped, which
+		 * must not tear down a live call. Mirrors
+		 * call_end_detect.ring_evidence_expired().
+		 */
+		if (last_ring_evidence_ms > 0 && t >= last_ring_evidence_ms
+		    && (t - last_ring_evidence_ms > RING_EVIDENCE_TIMEOUT_MS)) {
+			call_session_end("no ring evidence");
 			ui_set_status("Ready");
 		}
 
-		// Timeout after 30 seconds if not answered (backup safety)
-		// This handles edge cases where RING detection fails
-		if (t - ringing_start > 30000) {
-			call_log("RING_TIMEOUT 30s");
-			ringing = false;
-			incoming_ui_shown = false;
+		/* Backup safety only — reaching this means the above failed. */
+		if (ringing && (t - ringing_start > RING_MAX_MS)) {
+			call_session_end("RING_TIMEOUT");
 			ui_set_status("Ready");
 		}
 	}
@@ -1673,51 +1776,91 @@ void loop()
 				(unsigned)outbound_call_active
 			);
 			int rc = lara_hangup();
-			outbound_call_active = false;
-			saw_in_call_cpas = false;
-			ringing = false;
+			call_session_end("hook hangup");
 			call_logf(
 				"t=%lu CALL_HANGUP_DONE rc=%d",
 				(unsigned long)millis(), rc
 			);
-			ui_set_status(rc == 0 ? "Call ended" : "Hangup fail");
+			if (rc == LARA_RC_OK)
+				ui_set_status("Call ended");
+			else
+				ui_set_status("Hangup fail");
 		} else if (!was_awake) {
 			/* Wake only — do not dial or answer from a dark display. */
 			call_log("HOOK_WAKE_ONLY");
-		} else if (stat == LARA_RINGING) {
+		} else if (stat == LARA_RINGING || ringing) {
+			/*
+			 * `ringing` is the answer-side fallback for a CPAS read
+			 * that timed out. Hangup already trusts
+			 * outbound_call_active the same way; without this a
+			 * visibly ringing phone could not be answered at all.
+			 * See tools/pulse_monitor/hook_action.py.
+			 */
 			ui_set_status("Answering");
-			call_log("CALL_ANSWER");
-			lara_answer();
-			ringing = false;
-			outbound_call_active = true;
-			saw_in_call_cpas = false;
-			last_call_cpas_poll_ms = millis();
-			ui_set_status("In call");
+			int rc = lara_answer();
+			call_logf(
+				"t=%lu CALL_ANSWER rc=%d cpas=%c",
+				(unsigned long)millis(), rc, (char)stat
+			);
+			if (rc == LARA_RC_OK) {
+				call_session_begin("ATA");
+				ui_set_status("In call");
+			} else {
+				call_session_end("ATA failed");
+				ui_set_status("Answer fail");
+			}
 		} else if (stat == LARA_READY) {
 			if (!has_digits) {
-				ui_set_status("No number");
-				call_log("DIAL_REFUSED empty buffer");
+				/*
+				 * Redial: load the previous number and show it,
+				 * but do not dial. The user has not seen it yet
+				 * — dialling here would place a call to a
+				 * number they only discover once it rings. A
+				 * second press takes the ordinary dial path.
+				 *
+				 * No status change, so it looks exactly like a
+				 * hand-dialled number (see handle_completed_digit).
+				 * See tools/pulse_monitor/hook_action.py.
+				 */
+				if (last_number_load(dial_buf, sizeof(dial_buf))) {
+					dial_idx = (unsigned char)strlen(dial_buf);
+					ui_note_activity();
+					ui_refresh();
+					call_logf(
+						"t=%lu REDIAL_RECALL num=%s",
+						(unsigned long)millis(),
+						dial_buf
+					);
+				} else {
+					ui_set_status("No number");
+					call_log("DIAL_REFUSED empty buffer");
+				}
 			} else {
 				ui_set_status("Dialing");
+				/*
+				 * Stored on attempt, not on success: a number
+				 * the network refused is exactly the one worth
+				 * being able to retry.
+				 */
+				last_number_store(dial_buf);
 				call_logf(
 					"t=%lu DIAL_START num=%s",
 					(unsigned long)millis(), dial_buf
 				);
-				int rc = lara_dial(dial_buf);
-				lara_activity after = lara_status();
+				int rc = lara_dial(dial_buf, sizeof(dial_buf));
 				call_logf(
-					"t=%lu DIAL_DONE rc=%d cpas_after=%c",
-					(unsigned long)millis(), rc, (char)after
+					"t=%lu DIAL_DONE rc=%d",
+					(unsigned long)millis(), rc
 				);
-				if (rc == 0) {
-					outbound_call_active = true;
-					saw_in_call_cpas = false;
-					last_call_cpas_poll_ms = millis();
+				if (rc == LARA_RC_OK) {
+					call_session_begin("ATD");
 					ui_set_status("Dialing");
 				} else {
-					outbound_call_active = false;
-					saw_in_call_cpas = false;
-					ui_set_status("Dial fail");
+					call_session_end("ATD failed");
+					if (rc == LARA_RC_ERROR)
+						ui_set_status("Dial rejected");
+					else
+						ui_set_status("No response");
 				}
 			}
 		} else {
@@ -1741,7 +1884,7 @@ void loop()
 void shutdown()
 {
 	oled_print("GOODBYE", 0, 30);
-	Serial.println("shutdown called; waiting for cell powerdown");
+	Serial.println(F("shutdown called; waiting for cell powerdown"));
 	lara_off(5000);
 	Serial.end();
 	digitalWrite(EN_12V, LOW);

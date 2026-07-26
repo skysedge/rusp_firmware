@@ -24,7 +24,14 @@ extern int pg;              // ePaper page number
 // Function declarations
 int epd_displayContacts(int n);
 void epd_splash();
-void epd_splashOld();
+
+/*
+ * Allocate / free the ePaper driver object. It is ~880 bytes and only needed
+ * while the panel is being drawn, so it is not held between uses. Always
+ * pair these; epd_acquire() returns false if the allocation fails.
+ */
+bool epd_acquire();
+void epd_release();
 
 // SD contact reading function (needs to be implemented)
 void SDgetContact(int line);

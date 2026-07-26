@@ -28,7 +28,7 @@ void SDgetContact(int line) {
     
     File myFile = SD.open("contacts.txt", FILE_READ);
     if (!myFile) {
-        Serial.println("Failed to open contacts.txt");
+        Serial.println(F("Failed to open contacts.txt"));
         return;
     }
     

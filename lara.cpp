@@ -8,8 +8,8 @@
 static struct lara_state lara;
 
 /*
- * URCs that arrive while expect()/AT helpers are reading must not be
- * discarded. Stash events here; lara_unsolicited() delivers them.
+ * URCs that arrive while an AT transaction is reading must not be discarded.
+ * Stash events here; lara_unsolicited() delivers them.
  */
 static bool urc_pending_ringing = false;
 static unsigned long urc_pending_last_ring = 0;
@@ -27,71 +27,182 @@ static char lara_read_byte(void)
 }
 
 
-/* expect lara to send a specific string (every byte still feeds URC parser) */
-static int expect(char *str, unsigned long timeout)
-{
-	unsigned i = 0;
-	unsigned long t0 = millis();
-	while (str[i]) {
-		if (millis() - t0 > timeout) {
-			lara.cons->print("LARA: timeout while expecting ");
-			lara.cons->println(str);
-			return -1;
-		}
-		if (lara.s->available()) {
-			char c = lara_read_byte();
-			if (c == str[i])
-				i += 1;
-			else
-				i = 0;
-		}
-	}
-	return 0;
-}
+/* Longest response line kept intact; longer lines are truncated. */
+#define LARA_LINE_LEN 96
+
+enum {
+	LARA_FINAL_NONE = 0,
+	LARA_FINAL_OK,
+	LARA_FINAL_ERROR,
+};
 
 
-/* expect lara to send one of several specific strings
- * @arg indices: array of unsigned zeros that is used to track matching
- * returns 0 if error or the index of the matched string, starting at 1
+/**
+ * Classify a complete response line as a final result code.
+ *
+ * Whole-line comparison is deliberate. The previous substring matcher
+ * accepted a quoted "OK" inside a +CLCC row as a terminator, and it never
+ * matched the verbose "+CME ERROR: ..." form that +CMEE=2 guarantees is the
+ * only error the modem emits.
+ *
+ * call_progress_final selects the ATD/ATA dialect. For every other command
+ * NO CARRIER is unsolicited and must be left to the URC handler, otherwise
+ * a dropped call silently becomes some unrelated command's result.
+ *
+ * Mirrors tools/pulse_monitor/at_transaction.py final_code().
  */
-static unsigned multiexpect(
-	unsigned str_count, unsigned *indices, char **strs,
-	unsigned long timeout
-){
-	unsigned long t0 = millis();
-	do {
-		if (lara.s->available()) {
-			char c = lara_read_byte();
-			for (unsigned i = 0; i < str_count; i++) {
-				if (!strs[i][indices[i]])
-					return 1 + i;
-				if (c == strs[i][indices[i]])
-					indices[i] += 1;
-				else
-					indices[i] = 0;
-			}
-		}
-	} while (millis() - t0 < timeout);
-	lara.cons->println("LARA: timeout while multiexpecting {");
-	for (unsigned i = 0; i < str_count; i++) {
-		lara.cons->println(strs[i]);
-	}
-	lara.cons->println("}");
-	return 0;
+static uint8_t lara_final_code(const char *line, bool call_progress_final)
+{
+	if (strcasecmp_P(line, PSTR("OK")) == 0)
+		return LARA_FINAL_OK;
+	if (strcasecmp_P(line, PSTR("ERROR")) == 0)
+		return LARA_FINAL_ERROR;
+	if (strncasecmp_P(line, PSTR("+CME ERROR:"), 11) == 0
+	    || strncasecmp_P(line, PSTR("+CMS ERROR:"), 11) == 0)
+		return LARA_FINAL_ERROR;
+	if (call_progress_final
+	    && (strcasecmp_P(line, PSTR("NO CARRIER")) == 0
+	        || strcasecmp_P(line, PSTR("BUSY")) == 0
+	        || strcasecmp_P(line, PSTR("NO ANSWER")) == 0
+	        || strcasecmp_P(line, PSTR("NO DIALTONE")) == 0))
+		return LARA_FINAL_ERROR;
+	return LARA_FINAL_NONE;
 }
 
 
-int lara_at_set(char *command, unsigned long timeout)
+/**
+ * Read one complete, non-empty line into buf (NUL-terminated, terminator
+ * stripped). Blank CR/LF separators are skipped. Over-long lines are
+ * truncated rather than split, so a fragment can never look like a result
+ * code. Every byte goes through lara_read_byte() so URCs arriving mid
+ * response are still delivered.
+ *
+ * deadline is an absolute millis() value; the cast keeps the comparison
+ * correct across the 49-day rollover.
+ */
+static bool lara_read_line(char *buf, uint8_t buf_len, unsigned long deadline)
+{
+	uint8_t len = 0;
+
+	while ((long)(millis() - deadline) < 0) {
+		if (!lara.s->available())
+			continue;
+		char c = lara_read_byte();
+		if (c == '\r' || c == '\n') {
+			if (len == 0)
+				continue;
+			buf[len] = '\0';
+			return true;
+		}
+		if (len + 1 < buf_len)
+			buf[len++] = c;
+	}
+	buf[len] = '\0';
+	return false;
+}
+
+
+/* True when line is the modem echoing "AT<command>" (ATE1 still in effect). */
+static bool lara_line_is_echo(const char *line, const char *command)
+{
+	if (command == nullptr)
+		return false;
+	if (strncasecmp_P(line, PSTR("AT"), 2) != 0)
+		return false;
+	return strcmp(line + 2, command) == 0;
+}
+
+
+/**
+ * Read one AT response, consuming everything through its final result code.
+ *
+ * That consumption is the whole point: lara_status() used to stop after the
+ * +CPAS digit and leave "\n\r\nOK\r\n" buffered, which the next command's
+ * matcher then accepted as its own result. lara_dial() and lara_hangup()
+ * reported success unconditionally as a result.
+ *
+ * @arg command  text after "AT", used to discard the echo (may be NULL)
+ * @arg prefix   information lines to capture (may be NULL)
+ * @arg resp     receives the last line matching prefix (may be NULL)
+ * Returns 0 on OK, -1 on an error result, -2 on timeout.
+ */
+static int lara_at_response(
+	const char *command, const char *prefix,
+	char *resp, uint8_t resp_len,
+	bool call_progress_final, unsigned long timeout_ms
+)
+{
+	char line[LARA_LINE_LEN];
+	unsigned long deadline = millis() + timeout_ms;
+	bool echo_pending = (command != nullptr);
+	uint8_t prefix_len = prefix ? (uint8_t)strlen(prefix) : 0;
+
+	if (resp && resp_len)
+		resp[0] = '\0';
+
+	while (lara_read_line(line, sizeof(line), deadline)) {
+		if (lara.cons)
+			lara.cons->println(line);
+		if (echo_pending && lara_line_is_echo(line, command)) {
+			echo_pending = false;
+			continue;
+		}
+		uint8_t fin = lara_final_code(line, call_progress_final);
+		if (fin == LARA_FINAL_OK)
+			return LARA_RC_OK;
+		if (fin == LARA_FINAL_ERROR)
+			return LARA_RC_ERROR;
+		if (resp && resp_len && prefix_len
+		    && strncasecmp(line, prefix, prefix_len) == 0) {
+			strncpy(resp, line, resp_len - 1);
+			resp[resp_len - 1] = '\0';
+		}
+	}
+	return LARA_RC_TIMEOUT;
+}
+
+
+/* Write "AT<command>\r". command may be "" for a bare AT ping. */
+static void lara_send_at(const char *command)
 {
 	lara.s->write("AT");
-	lara.s->write(command);
+	if (command && command[0])
+		lara.s->write(command);
 	lara.s->write('\r');
 	lara.s->flush();
-	unsigned indices[] = {0, 0};
-	char *strs[] = {"OK\r", "ERROR\r"};
-	if (multiexpect(2, indices, strs, timeout) != 1) {
-		lara.cons->print("LARA: failed to AT");
-		lara.cons->println(command);
+}
+
+
+/* Send "AT<command>" and read its response. See lara_at_response(). */
+static int lara_at(
+	const char *command, const char *prefix,
+	char *resp, uint8_t resp_len, unsigned long timeout_ms
+)
+{
+	lara_send_at(command);
+	return lara_at_response(
+		command, prefix, resp, resp_len, false, timeout_ms
+	);
+}
+
+
+/* As lara_at(), for the call commands where NO CARRIER / BUSY are results. */
+static int lara_at_call(const char *command, unsigned long timeout_ms)
+{
+	lara_send_at(command);
+	return lara_at_response(command, nullptr, nullptr, 0, true, timeout_ms);
+}
+
+
+int lara_at_set(const char *command, unsigned long timeout)
+{
+	int rc = lara_at(command, nullptr, nullptr, 0, timeout);
+	if (rc != LARA_RC_OK) {
+		lara.cons->print(F("LARA: failed to AT"));
+		lara.cons->print(command);
+		lara.cons->println(
+			rc == LARA_RC_ERROR ? F(" (ERROR)") : F(" (TIMEOUT)")
+		);
 		return -1;
 	}
 	/* datasheet tells us to delay >20 ms after receiving a final result */
@@ -100,19 +211,56 @@ int lara_at_set(char *command, unsigned long timeout)
 }
 
 
+/* Wait for an unsolicited line starting with prefix. True if it arrived. */
+static bool lara_wait_line(const char *prefix, unsigned long timeout_ms)
+{
+	char line[LARA_LINE_LEN];
+	unsigned long deadline = millis() + timeout_ms;
+	uint8_t prefix_len = (uint8_t)strlen(prefix);
+
+	while (lara_read_line(line, sizeof(line), deadline)) {
+		if (lara.cons)
+			lara.cons->println(line);
+		if (strncasecmp(line, prefix, prefix_len) == 0)
+			return true;
+	}
+	return false;
+}
+
+
+/*
+ * Ping until the modem answers OK. PWR_DET only says the module has power;
+ * this is what proves the UART is usable before any config is attempted.
+ */
+static bool lara_sync(uint8_t attempts)
+{
+	for (uint8_t i = 0; i < attempts; i++) {
+		if (lara_at("", nullptr, nullptr, 0, 500) == LARA_RC_OK)
+			return true;
+	}
+	return false;
+}
+
+
 int lara_on(
 	HardwareSerial *serial, HardwareSerial *console, unsigned long timeout
 )
 {
-	if (!*console) return -1;
+	if (console == nullptr) return -1;
 	lara.s = serial;
 	lara.cons = console;
-	lara.cons->println("LARA: initializing");
+	lara.cons->println(F("LARA: initializing"));
 
 	pinMode(CELL_ON, OUTPUT);
 	pinMode(NET_STAT, INPUT);
 	pinMode(CELL_CTS, INPUT);
 	pinMode(CELL_RTS, OUTPUT);
+	/*
+	 * Assert RTS (active low) before the first byte. The module boots on
+	 * &K3 and only sees &K0 once it has answered, so until then this is
+	 * what stops it gating its transmitter mid-message.
+	 */
+	digitalWrite(CELL_RTS, LOW);
 	pinMode(CELL_RESET, OUTPUT);
 	pinMode(CELL_PWR_DET, INPUT);
 
@@ -124,14 +272,6 @@ int lara_on(
 	 */
 	unsigned long t0 = millis();
 	lara.s->begin(115200);
-	while (!*lara.s) {
-		if (millis() - t0 > timeout) {
-			lara.cons->println(
-				"LARA: timeout waiting for serial to begin"
-			);
-			return -1;
-		}
-	}
 
 	bool already_on = digitalRead(CELL_PWR_DET) == HIGH;
 	bool pulsed = false;
@@ -140,7 +280,7 @@ int lara_on(
 		if (lara_at_set("", 400) == 0) {
 			already_on = true;
 			lara.cons->println(
-				"LARA: AT ok with PWR_DET low (skip CELL_ON pulse)"
+				F("LARA: AT ok with PWR_DET low (skip pulse)")
 			);
 		}
 	}
@@ -154,32 +294,62 @@ int lara_on(
 		while (digitalRead(CELL_PWR_DET) != HIGH) {
 			if (millis() - t0 > timeout) {
 				lara.cons->println(
-					"LARA: timeout waiting for CELL_PWR_DET"
+					F("LARA: timeout on CELL_PWR_DET")
 				);
 				return -1;
 			}
 		}
 	} else if (digitalRead(CELL_PWR_DET) == HIGH) {
 		lara.cons->println(
-			"LARA: already powered (skip CELL_ON / +PACSP1 wait)"
+			F("LARA: already powered (skip pulse / +PACSP1)")
 		);
 	}
 
 	/* Cold start only: module emits +PACSP1 once after power-up. */
 	if (pulsed)
-		expect("+PACSP1\r", timeout);
+		lara_wait_line("+PACSP1", timeout);
 
-	/* enable verbose errors */
-	lara_at_set("+CMEE=2", 1000);
-	/* maximum call volume */
-	lara_at_set("+CLVL=6", 1000);
-	/* enable codec autoconfiguration on next boot */
-	lara_at_set("+UEXTDCONF=0,1", 1000);
-	/* Voice call status URCs (+UCALLSTAT: <id>,<stat>) */
-	lara_at_set("+UCALLSTAT=1", 1000);
+	if (!lara_sync(3)) {
+		lara.cons->println(F("LARA: no AT response after power-up"));
+		return -1;
+	}
 
-	lara.cons->println("LARA: ready");
-	return 0;
+	/* Echo off — responses carry only what the modem has to say. */
+	lara_at_set("E0", LARA_AT_TIMEOUT_MS);
+
+	/*
+	 * Mandatory config. See boot_config_sequence() in
+	 * tools/pulse_monitor/modem_boot.py for the ordering constraints.
+	 *
+	 * &K0 first: the u-blox default is &K3 (RTS/CTS hardware flow
+	 * control), but CELL_RTS is configured as an output and never driven,
+	 * so the module can gate its own transmitter mid-message. That was
+	 * observed as URCs arriving as a lone "R" or "+" and AT+CSQ hitting
+	 * its 1 s timeout. Unsolicited output is never retried, so a throttled
+	 * UART loses incoming calls outright.
+	 *
+	 * +CMEE=2 turns failures into readable text, and +UCALLSTAT=1 is the
+	 * only thing that drives the call-phase UI. If any of these is refused
+	 * the phone cannot report call state honestly, so say so rather than
+	 * booting to a "Modem ready" that is not true.
+	 */
+	int rc = 0;
+	if (lara_at_set("&K0", LARA_AT_TIMEOUT_MS) != 0)
+		rc = -1;
+	if (lara_at_set("+CMEE=2", LARA_AT_TIMEOUT_MS) != 0)
+		rc = -1;
+	if (lara_at_set("+UCALLSTAT=1", LARA_AT_TIMEOUT_MS) != 0)
+		rc = -1;
+
+	/* Advisory: audio tuning, not required to place or receive a call. */
+	lara_at_set("+CLVL=6", LARA_AT_TIMEOUT_MS);
+	/* Takes effect on the module's next power-up, not this one. */
+	lara_at_set("+UEXTDCONF=0,1", LARA_AT_TIMEOUT_MS);
+
+	lara.cons->println(
+		rc == 0 ? F("LARA: ready") : F("LARA: config incomplete")
+	);
+	return rc;
 }
 
 
@@ -314,26 +484,31 @@ void lara_unsolicited(
 }
 
 
+/* Skip "<prefix>" then any blanks, returning the first value character. */
+static const char *lara_payload_after(const char *line, const char *prefix)
+{
+	const char *p = line + strlen(prefix);
+	while (*p == ' ' || *p == '\t')
+		p++;
+	return p;
+}
+
+
 lara_activity lara_status()
 {
-	lara.s->write("AT+CPAS\r");
-	lara.s->flush();
-	if (expect("+CPAS: ", 1000) != 0)
+	char resp[24];
+
+	if (!lara.s)
 		return LARA_UNKNOWN;
-	unsigned long t0 = millis();
-	while (!lara.s->available()) {
-		if (millis() - t0 > 1000)
-			return LARA_UNKNOWN;
-	}
-	lara_activity ret = (lara_activity)lara_read_byte();
-	t0 = millis();
-	while (!lara.s->available()) {
-		if (millis() - t0 > 200)
-			break;
-	}
-	if (lara.s->available())
-		lara_read_byte(); /* clear trailing \r (or leftover) */
-	return ret;
+	if (lara_at("+CPAS", "+CPAS:", resp, sizeof(resp), LARA_AT_TIMEOUT_MS)
+	    != LARA_RC_OK)
+		return LARA_UNKNOWN;
+
+	/* <pas> is a single digit 0..5 (3GPP 27.007 §8.1). */
+	const char *p = lara_payload_after(resp, "+CPAS:");
+	if (*p < '0' || *p > '5')
+		return LARA_UNKNOWN;
+	return (lara_activity)*p;
 }
 
 
@@ -393,108 +568,73 @@ static int prefer_clcc_stat(const int *stats, unsigned n)
 }
 
 
+/*
+ * +CLCC returns one information line per call leg, so it collects rows
+ * itself instead of using lara_at()'s single-line capture. It still reads
+ * through the final result code, which is what keeps the stream in sync.
+ */
 int lara_clcc_stat(void)
 {
+	char line[LARA_LINE_LEN];
+	int stats[6];
+	unsigned nstats = 0;
+
 	if (!lara.s)
 		return -1;
 
-	lara.s->write("AT+CLCC\r");
-	lara.s->flush();
+	lara_send_at("+CLCC");
+	unsigned long deadline = millis() + LARA_AT_TIMEOUT_MS;
 
-	int stats[6];
-	unsigned nstats = 0;
-	char line[96];
-	uint8_t len = 0;
-	unsigned long t0 = millis();
-	bool got_ok = false;
-
-	while (!got_ok && (millis() - t0) < 1000) {
-		if (!lara.s->available())
-			continue;
-		char c = lara_read_byte();
+	while (lara_read_line(line, sizeof(line), deadline)) {
 		if (lara.cons)
-			lara.cons->write(c);
-		if (c == '\r' || c == '\n') {
-			if (len == 0)
-				continue;
-			line[len] = '\0';
-			len = 0;
-			if (strcmp(line, "OK") == 0) {
-				got_ok = true;
-				break;
-			}
-			if (strcmp(line, "ERROR") == 0)
-				return -1;
-			int st = parse_clcc_stat_line(line);
-			if (st >= 0 && nstats < (unsigned)(sizeof(stats) / sizeof(stats[0])))
-				stats[nstats++] = st;
-		} else if (len + 1 < sizeof(line)) {
-			line[len++] = c;
-		} else {
-			len = 0; /* overflow — resync on next newline */
-		}
+			lara.cons->println(line);
+		if (lara_line_is_echo(line, "+CLCC"))
+			continue;
+		uint8_t fin = lara_final_code(line, false);
+		if (fin == LARA_FINAL_OK)
+			return prefer_clcc_stat(stats, nstats);
+		if (fin == LARA_FINAL_ERROR)
+			return -1;
+		int st = parse_clcc_stat_line(line);
+		if (st >= 0
+		    && nstats < (unsigned)(sizeof(stats) / sizeof(stats[0])))
+			stats[nstats++] = st;
 	}
-
-	if (!got_ok)
-		return -1;
-	return prefer_clcc_stat(stats, nstats);
+	return -1;
 }
 
 
 int lara_answer()
 {
-	lara.s->write("ATA\r");
-	lara.s->flush();
-	/* TODO: error handling */
-	return 0;
+	if (!lara.s)
+		return LARA_RC_TIMEOUT;
+	return lara_at_call("A", LARA_ANSWER_TIMEOUT_MS);
 }
 
 
 int lara_hangup()
 {
-	lara.s->write("AT+CHUP\r");
-	lara.s->flush();
-	return expect("OK\r", 1000);
+	if (!lara.s)
+		return LARA_RC_TIMEOUT;
+	return lara_at("+CHUP", nullptr, nullptr, 0, LARA_HANGUP_TIMEOUT_MS);
 }
 
 
 int lara_signal_rssi(void)
 {
+	char resp[24];
+
 	if (!lara.s)
 		return 99;
-	lara.s->write("AT+CSQ\r");
-	lara.s->flush();
-	if (expect("+CSQ: ", 1000) != 0)
+	if (lara_at("+CSQ", "+CSQ:", resp, sizeof(resp), LARA_AT_TIMEOUT_MS)
+	    != LARA_RC_OK)
 		return 99;
 
-	char digits[4];
-	uint8_t n = 0;
-	unsigned long t0 = millis();
-	while (n < 3 && (millis() - t0) < 500) {
-		if (!lara.s->available())
-			continue;
-		char c = lara_read_byte();
-		if (c >= '0' && c <= '9')
-			digits[n++] = c;
-		else
-			break;
-	}
-	digits[n] = '\0';
-
-	/* Discard rest of the CSQ line, then OK. */
-	t0 = millis();
-	while ((millis() - t0) < 300) {
-		if (!lara.s->available())
-			continue;
-		char c = lara_read_byte();
-		if (c == '\n')
-			break;
-	}
-	expect("OK\r", 500);
-
-	if (n == 0)
+	/* "+CSQ: <rssi>,<ber>" — 99 already means "not known" to callers. */
+	const char *p = lara_payload_after(resp, "+CSQ:");
+	if (*p < '0' || *p > '9')
 		return 99;
-	return atoi(digits);
+	return atoi(p);
 }
 
 
@@ -513,32 +653,40 @@ int lara_signal_bars(int rssi)
 }
 
 
-int lara_dial(char *dial_string)
+int lara_dial(const char *dial_string, uint8_t buf_len)
 {
-	if (lara.cons) {
-		lara.cons->print("LARA: ATD");
-		if (dial_string) {
-			for (unsigned i = 0; i < 32; i++) {
-				if (!dial_string[i]) break;
-				lara.cons->write(dial_string[i]);
-			}
+	char cmd[40];
+	uint8_t n = 0;
+
+	if (!lara.s)
+		return LARA_RC_TIMEOUT;
+	if (dial_string == nullptr || buf_len == 0 || dial_string[0] == '\0')
+		return LARA_RC_ERROR;
+
+	/*
+	 * Bounded by the caller's array so an unterminated buffer cannot be
+	 * over-read; the old code scanned 32 bytes of a 30-byte dial_buf.
+	 */
+	cmd[n++] = 'D';
+	for (uint8_t i = 0; i < buf_len && dial_string[i]; i++) {
+		if ((unsigned)(n + 2) >= sizeof(cmd)) {
+			if (lara.cons)
+				lara.cons->println(F("LARA: dial string too long"));
+			return LARA_RC_ERROR;
 		}
-		lara.cons->println(";");
+		cmd[n++] = dial_string[i];
 	}
-	lara.s->write("ATD");
-	/* Stop at 32 if the string has no null terminator. */
-	if (dial_string) {
-		for (unsigned i = 0; i < 32; i++) {
-			if (!dial_string[i]) break;
-			lara.s->write(dial_string[i]);
-		}
-	}
-	lara.s->write(";\r");
-	lara.s->flush();
-	int rc = expect("OK\r", 1000);
+	cmd[n++] = ';';	/* voice call */
+	cmd[n] = '\0';
+
 	if (lara.cons) {
-		lara.cons->print("LARA: ATD result=");
-		lara.cons->println(rc == 0 ? "OK" : "TIMEOUT/FAIL");
+		lara.cons->print(F("LARA: AT"));
+		lara.cons->println(cmd);
+	}
+	int rc = lara_at_call(cmd, LARA_DIAL_TIMEOUT_MS);
+	if (lara.cons) {
+		lara.cons->print(F("LARA: ATD rc="));
+		lara.cons->println(rc);
 	}
 	return rc;
 }
@@ -546,14 +694,27 @@ int lara_dial(char *dial_string)
 
 int lara_off(unsigned long timeout)
 {
-	lara.s->write("AT+CPWROFF\r");
-	lara.s->flush();
+	if (!lara.s)
+		return -1;
+
+	/*
+	 * Wait for the final result before watching the pin: +CPWROFF can be
+	 * refused (ERROR) and the pin would then never drop, burning the whole
+	 * timeout with no indication of why.
+	 */
+	int rc = lara_at("+CPWROFF", nullptr, nullptr, 0, LARA_AT_TIMEOUT_MS);
+	if (rc != LARA_RC_OK && lara.cons) {
+		lara.cons->print(F("LARA: +CPWROFF rc="));
+		lara.cons->println(rc);
+	}
+
 	unsigned long t0 = millis();
 	while (digitalRead(CELL_PWR_DET) != LOW) {
 		if (millis() - t0 > timeout) {
 			lara.cons->println(
-				"LARA: timeout waiting for CELL_PWR_DET == LOW"
+				F("LARA: timeout on CELL_PWR_DET == LOW")
 			);
+			lara.s->end();
 			return -1;
 		}
 	}

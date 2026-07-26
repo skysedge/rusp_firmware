@@ -105,8 +105,8 @@ char *battery_format_field(char *buf, size_t buflen, int pct, bool charging)
 		return buf;
 	char meter[8];
 	format_meter(meter, 6, pct);
-	snprintf(
-		buf, buflen, "%s[%s]%d%%",
+	snprintf_P(
+		buf, buflen, PSTR("%s[%s]%d%%"),
 		charging ? "+" : "", meter, pct
 	);
 	return buf;

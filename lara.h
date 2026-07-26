@@ -1,5 +1,5 @@
 #ifndef RUSP_LARA_H
-#define RUSP_LARA_H_
+#define RUSP_LARA_H
 
 #include <HardwareSerial.h>
 
@@ -11,6 +11,22 @@
 #define CELL_RESET A1
 #define CELL_PWR_DET A2
 
+
+/*
+ * Outcome of one AT transaction. OK is 0 so existing `rc == 0` checks and
+ * the int-returning helpers below keep their meaning.
+ */
+enum {
+	LARA_RC_OK	= 0,
+	LARA_RC_ERROR	= -1,	/* modem answered ERROR / +CME ERROR: ... */
+	LARA_RC_TIMEOUT	= -2,	/* no final result code before the deadline */
+};
+
+/* Per-command timeouts. Only the failure path waits the whole budget. */
+#define LARA_AT_TIMEOUT_MS	1000
+#define LARA_DIAL_TIMEOUT_MS	5000
+#define LARA_ANSWER_TIMEOUT_MS	5000
+#define LARA_HANGUP_TIMEOUT_MS	5000
 
 typedef char lara_activity;
 enum {
@@ -31,7 +47,7 @@ struct lara_state {
 };
 
 // execute an AT set command (a command that can only return OK or ERROR)
-int lara_at_set(char *command, unsigned long timeout);
+int lara_at_set(const char *command, unsigned long timeout);
 
 // initialize the modem
 int lara_on(
@@ -65,8 +81,12 @@ int lara_answer();
 // hang up on a current call
 int lara_hangup();
 
-// dial a phone number
-int lara_dial(char *dial_string);
+/*
+ * Dial a NUL-terminated number. buf_len is the caller's array size and
+ * bounds the scan, so an unterminated buffer cannot be over-read.
+ * Returns LARA_RC_OK / LARA_RC_ERROR / LARA_RC_TIMEOUT.
+ */
+int lara_dial(const char *dial_string, uint8_t buf_len);
 
 /*
  * Query AT+CSQ. Returns RSSI 0..31, or 99 if unknown / error.

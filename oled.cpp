@@ -694,7 +694,7 @@ void oled_show_ui(
 	const bool has_number = (number != nullptr && number[0] != '\0');
 	const bool idle =
 		(status == nullptr || status[0] == '\0'
-		 || strcmp(status, "Ready") == 0);
+		 || strcmp_P(status, PSTR("Ready")) == 0);
 
 	/*
 	 * Non-idle call phase (Dialing / Ringing / In call / …) in a smaller

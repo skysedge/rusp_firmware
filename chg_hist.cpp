@@ -78,8 +78,8 @@ void chg_hist_boot_dump(HardwareSerial *cons)
 		uint32_t ms = ee_read_u32(addr);
 		uint8_t raw = EEPROM.read(addr + 4);
 		char line[40];
-		snprintf(
-			line, sizeof(line), "CHG_HIST t=%lu raw=%u",
+		snprintf_P(
+			line, sizeof(line), PSTR("CHG_HIST t=%lu raw=%u"),
 			(unsigned long)ms, (unsigned)raw
 		);
 		cons->println(line);

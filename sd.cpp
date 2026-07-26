@@ -160,22 +160,22 @@ bool sd_handle_serial_command(HardwareSerial *cons, const char *line)
 	while (*args == ' ')
 		args++;
 
-	if (*args == '\0' || strcmp(args, "help") == 0) {
+	if (*args == '\0' || strcmp_P(args, PSTR("help")) == 0) {
 		sd_cmd_help(cons);
 		return true;
 	}
-	if (strcmp(args, "ls") == 0) {
+	if (strcmp_P(args, PSTR("ls")) == 0) {
 		sd_cmd_ls(cons);
 		return true;
 	}
-	if (strncmp(args, "cat ", 4) == 0) {
+	if (strncmp_P(args, PSTR("cat "), 4) == 0) {
 		const char *path = args + 4;
 		while (*path == ' ')
 			path++;
 		sd_cmd_cat(cons, path);
 		return true;
 	}
-	if (strcmp(args, "cat") == 0) {
+	if (strcmp_P(args, PSTR("cat")) == 0) {
 		cons->println(F("usage: sd cat <FILE>"));
 		return true;
 	}

@@ -33,3 +33,31 @@ def should_wait_for_pacsp(pwr_det_high: bool, at_responds: bool = False) -> bool
 	Skip when the modem was already up (PWR_DET or AT) — URC will not repeat.
 	"""
 	return should_pulse_cell_on(pwr_det_high, at_responds)
+
+
+# Commands whose failure means the phone cannot report call state honestly.
+# &K0 is here because the u-blox default is &K3 (RTS/CTS hardware flow
+# control). The board sets CELL_RTS as an output and never drives it, so the
+# module can gate its own transmitter and stop part-way through a message —
+# observed as URCs arriving as a lone "R" or "+", and as AT+CSQ timing out.
+# Unsolicited output has no retry, so a throttled UART loses calls outright.
+BOOT_MANDATORY = ("&K0", "+CMEE=2", "+UCALLSTAT=1")
+
+# Nice to have; the phone still places and receives calls without them.
+BOOT_ADVISORY = ("+CLVL=6", "+UEXTDCONF=0,1")
+
+
+def boot_config_sequence() -> list[str]:
+	"""Ordered AT configuration applied once the modem answers.
+
+	Order is load-bearing, not cosmetic:
+	  * E0 first, so no later response is polluted by a command echo.
+	  * &K0 before anything that depends on the modem talking freely.
+	  * +CMEE=2 before the rest, so any later failure is readable text.
+	"""
+	return ["E0", *BOOT_MANDATORY, *BOOT_ADVISORY]
+
+
+def boot_command_is_mandatory(command: str) -> bool:
+	"""Should lara_on() report failure when this command is refused?"""
+	return command in BOOT_MANDATORY
