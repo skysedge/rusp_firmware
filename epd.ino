@@ -1,4 +1,5 @@
 //Make the ePaper eink do various things
+#include "epd.h"
 
 int epd_displayContacts(int n){
 	// Construct ePaper object if not already created (using placement new on static buffer)
@@ -145,57 +146,26 @@ void epd_splash(){
 	Serial.flush();
 	
 	eink->setRotation(0);
-	eink->setTextColor(GxEPD_BLACK);
 	
-	eink->firstPage();	//this function is called before every time ePaper is updated. Has nothing to do with what I call page numbers in this section of the program.
-  	eink->setFullWindow();
+	/*
+	 * Precomputed Mandelbrot splash (epd_fractal_splash.h).
+	 * Regenerate with: tools/pulse_monitor/gen_epd_fractal_splash.py
+	 */
+	eink->firstPage();
+	eink->setFullWindow();
 	do {
-		eink->fillScreen(GxEPD_WHITE); // set the background to white (fill the buffer with value for white)
-		eink->setFont(&FreeSans9pt7b);
-		eink->setCursor(12, 30);
-		eink->print("R");
-		eink->setCursor(31, 35);
-		eink->print("o");
-		eink->setCursor(50, 40);
-		eink->print("t");
-		eink->setCursor(69, 45);
-		eink->print("a");
-		eink->setCursor(88, 50);
-		eink->print("r");
-		eink->setCursor(107, 55);
-		eink->print("y");
-		eink->setFont(&FreeSerifItalic9pt7b);
-		eink->setCursor(15, 70);
-		eink->print("UnSmArT");
-		eink->setFont(&FreeSerif9pt7b);
-		eink->setCursor(30, 90);
-		eink->print("PHONE");
-		eink->setCursor(8, 110);
-		eink->setFont();
-		eink->print("(for making calls)");
-		eink->setCursor(42, 150);
-		eink->setFont(&FreeMono9pt7b);
-		eink->print("AKA");
-		eink->setFont(&FreeSerifItalic9pt7b);
-		eink->setCursor(10, 180);
-		eink->print("an electronic,");
-		eink->setFont(&FreeSans9pt7b);
-		eink->setCursor(35, 200);
-		eink->print("portable,");
-		eink->setFont(&FreeMono9pt7b);
-		eink->setCursor(15, 220);
-		eink->print("digital,");
-		eink->setFont(&FreeSerifItalic9pt7b);
-		eink->setCursor(30, 240);
-		eink->print("wireless,");
-		eink->setFont(&FreeMonoBold9pt7b);
-		eink->setCursor(10, 260);
-		eink->print("TELEPHONE");
-		delay(50);
+		eink->fillScreen(GxEPD_WHITE);
+		eink->drawBitmap(
+			0, 0,
+			EPD_FRACTAL_SPLASH,
+			EPD_FRACTAL_SPLASH_WIDTH,
+			EPD_FRACTAL_SPLASH_HEIGHT,
+			GxEPD_BLACK
+		);
 	} while (eink->nextPage());
 	eink->hibernate();	//If this isn't here, wonky behavior ensues.
 	
-	Serial.println("ePaper: Splash complete, hibernated");
+	Serial.println("ePaper: Fractal splash complete, hibernated");
 }
 
 void epd_splashOld(){

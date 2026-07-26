@@ -7,6 +7,7 @@
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSerifItalic9pt7b.h>
 #include <Fonts/FreeSerif9pt7b.h>
+#include "epd_fractal_splash.h"
 
 // Maximum height macro from old firmware
 #define MAX_HEIGHT(EPD) (EPD::HEIGHT <= 800 / (EPD::WIDTH / 8) ? EPD::HEIGHT : 800 / (EPD::WIDTH / 8))
