@@ -174,12 +174,23 @@ static void set_row_addr(uint8_t start_addr, uint8_t end_addr) {
 
 // Clear the OLED display.
 void oled_clear() {
-	// Set the address range to the entire display.
-	set_col_addr(0, H_RES - 1);
+	/*
+	 * Addressing is in GDDRAM columns, not pixels: the SSD1362 packs two
+	 * 4-bit pixels per column byte, so the panel is H_COLS (128) wide in
+	 * addresses even though it is H_RES (256) pixels wide.
+	 *
+	 * This previously used H_RES for both the window and the byte count,
+	 * which set a column window past the end of the controller and wrote
+	 * 16384 bytes into 8192 bytes of memory — every pixel twice. The cost
+	 * was not just wasted SPI: a full clear held the CPU for tens of
+	 * milliseconds with nothing draining the modem UART, and the receive
+	 * buffer holds only a few milliseconds of data. Modem URCs were being
+	 * truncated mid-line as a result.
+	 */
+	set_col_addr(0, H_COLS - 1);
 	set_row_addr(0, V_RES - 1);
 
-	// Clear the display by writing the null byte to all pixels.
-	for (uint32_t pixel_idx = 0; pixel_idx < H_RES * V_RES; pixel_idx++) {
+	for (uint32_t i = 0; i < (uint32_t)H_COLS * V_RES; i++) {
 		write_data(MIN_BRIGHT);
 	}
 }
@@ -233,8 +244,8 @@ void oled_init() {
 	write_cmd(0X12); //	(12H=Unlock,16H=Lock)
 	write_cmd(0XAE); //	Display OFF (sleep mode)
 
-	set_col_addr(0x00, H_RES - 1);	// [0, 127]
-	set_row_addr(0x00, V_RES - 1);	// [0, 31]
+	set_col_addr(0x00, H_COLS - 1);	// [0, 127] GDDRAM columns
+	set_row_addr(0x00, V_RES - 1);	// [0, 63] rows
 
 	write_cmd(0X81);	// Set contrast
 	write_cmd(0x2f);
@@ -680,27 +691,45 @@ static void oled_draw_phone_number(const char* text)
 	);
 }
 
-void oled_show_ui(
-	const char* status, const char* number,
-	int batt_pct, bool charging, int signal_bars
+/*
+ * The UI is two horizontal bands: icons and call status above, number or
+ * message below. Nothing in the top band reaches past row 17 (battery icon
+ * rows 4-13, signal bars to row 13, 8pt status rows 6-17) and the bottom band
+ * starts at row 40, so row 29 splits them with margin on both sides.
+ */
+#define OLED_UI_TOP_ROW_LAST 29
+
+static bool oled_ui_status_is_idle(const char* status)
+{
+	return status == nullptr || status[0] == '\0'
+	       || strcmp_P(status, PSTR("Ready")) == 0;
+}
+
+/*
+ * Repaint the top band only.
+ *
+ * Split out from oled_show_ui so a battery or signal tick does not repaint the
+ * whole panel. A full repaint is ~8192 SPI bytes and holds the CPU for tens of
+ * milliseconds, during which nothing drains the modem UART and arriving URCs
+ * are lost to buffer overrun. Repainting one band halves that window, and the
+ * periodic meter refresh -- by far the most frequent redraw -- only ever needs
+ * this band.
+ */
+void oled_ui_draw_top(
+	const char* status, int batt_pct, bool charging, int signal_bars
 )
 {
 	oled_enable();
-	oled_clear();
+	oled_fill_cols(0, H_COLS - 1, 0, OLED_UI_TOP_ROW_LAST, MIN_BRIGHT);
 
 	oled_draw_signal_icon(signal_bars);
 	oled_draw_battery_icon(batt_pct, charging);
 
-	const bool has_number = (number != nullptr && number[0] != '\0');
-	const bool idle =
-		(status == nullptr || status[0] == '\0'
-		 || strcmp_P(status, PSTR("Ready")) == 0);
-
 	/*
-	 * Non-idle call phase (Dialing / Ringing / In call / …) in a smaller
+	 * Non-idle call phase (Dialing / Ringing / In call / ...) in a smaller
 	 * 8pt font, centered between the icons.
 	 */
-	if (!idle && status != nullptr) {
+	if (!oled_ui_status_is_idle(status)) {
 		const uint16_t side = 18;
 		const uint16_t budget =
 			(H_COLS > (uint16_t)(side * 2))
@@ -730,13 +759,31 @@ void oled_show_ui(
 			);
 		}
 	}
+}
 
-	if (has_number)
+/* Repaint the bottom band only. See oled_ui_draw_top for why this is split. */
+void oled_ui_draw_bottom(const char* status, const char* number)
+{
+	oled_enable();
+	oled_fill_cols(
+		0, H_COLS - 1, OLED_UI_TOP_ROW_LAST + 1, V_RES - 1, MIN_BRIGHT
+	);
+
+	if (number != nullptr && number[0] != '\0')
 		oled_draw_phone_number(number);
-	else if (idle)
+	else if (oled_ui_status_is_idle(status))
 		oled_draw_bottom_text("Ready to dial");
 	else
 		oled_draw_bottom_text(status);
+}
+
+void oled_show_ui(
+	const char* status, const char* number,
+	int batt_pct, bool charging, int signal_bars
+)
+{
+	oled_ui_draw_top(status, batt_pct, charging, signal_bars);
+	oled_ui_draw_bottom(status, number);
 }
 
 
@@ -778,8 +825,8 @@ void oled_erase_str(char* str, uint16_t curs_x, uint16_t curs_y) {
 		// Get glyph's width from flash memory.
 		uint8_t g_width = pgm_read_byte(&GLYPHS[str[char_idx] - 32].width);
 
-		// Check whether the glyph will exceed the horizontal resolution of the display.
-		if(curs_x + g_width > H_RES)
+		// Bound in GDDRAM columns, matching oled_draw_str.
+		if(curs_x + g_width > H_COLS)
 			break;
 
 		// Erase the glyph from the display.

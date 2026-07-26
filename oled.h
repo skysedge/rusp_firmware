@@ -86,6 +86,17 @@ void oled_print_status(const char* line1, const char* line2);
  *   bottom — phone number, or "Ready to dial" when idle
  * signal_bars is 0..4. number may be NULL/empty.
  */
+/*
+ * Repaint one band of the post-boot UI. Callers that know only the meters or
+ * only the number changed should use these instead of oled_show_ui, which
+ * repaints the whole panel and blocks the CPU long enough to overrun the
+ * modem UART receive buffer.
+ */
+void oled_ui_draw_top(
+	const char* status, int batt_pct, bool charging, int signal_bars
+);
+void oled_ui_draw_bottom(const char* status, const char* number);
+
 void oled_show_ui(
 	const char* status, const char* number,
 	int batt_pct, bool charging, int signal_bars

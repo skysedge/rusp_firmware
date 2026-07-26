@@ -385,20 +385,36 @@ static void ui_refresh(void)
 	else
 		formatted[0] = '\0';
 
-	if (ui_have_last
-	    && pct == ui_last_batt_pct
-	    && charging == ui_last_charging
-	    && bars == ui_last_signal_bars
-	    && strcmp(ui_status, ui_last_status) == 0
-	    && strcmp(raw, ui_last_number) == 0) {
-		return;
-	}
+	/*
+	 * Repaint per band, not per frame. Status text appears in both bands
+	 * (centered up top, and as the bottom line when no number is held), so
+	 * a status change dirties both; meters dirty only the top and the
+	 * dialled number only the bottom.
+	 *
+	 * The common case by far is the periodic meter refresh ticking the
+	 * battery percent or a signal bar. Repainting the whole panel for that
+	 * blocked the CPU long enough to overrun the modem UART receive buffer
+	 * and truncate incoming URCs.
+	 */
+	const bool status_changed =
+		!ui_have_last || strcmp(ui_status, ui_last_status) != 0;
+	const bool top_dirty =
+		status_changed
+		|| pct != ui_last_batt_pct
+		|| charging != ui_last_charging
+		|| bars != ui_last_signal_bars;
+	const bool bottom_dirty =
+		status_changed || strcmp(raw, ui_last_number) != 0;
 
-	oled_show_ui(
-		ui_status,
-		formatted[0] ? formatted : nullptr,
-		pct, charging, bars
-	);
+	if (!top_dirty && !bottom_dirty)
+		return;
+
+	if (top_dirty)
+		oled_ui_draw_top(ui_status, pct, charging, bars);
+	if (bottom_dirty)
+		oled_ui_draw_bottom(
+			ui_status, formatted[0] ? formatted : nullptr
+		);
 
 	ui_last_batt_pct = pct;
 	ui_last_charging = charging;
