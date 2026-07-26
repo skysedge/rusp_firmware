@@ -18,7 +18,7 @@ PULSES_DONE_MS = 200
 # If no regular return yet, wait this long before best-effort fallback
 # (avoids committing irregular wind during a pause before return).
 FALLBACK_COMMIT_MS = 500
-# Valid raw pulse counts after debounce (PULSE_FUDGE → '1'..'0').
+# Valid raw pulse counts after debounce (less the non-digit edge, '1'..'0').
 MIN_PULSES_FOR_DIGIT = 2
 MAX_PULSES_FOR_DIGIT = 11
 # Max |new_gap - mean_return_gap| as a percentage of mean. Relative cadence.

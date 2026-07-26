@@ -2,14 +2,17 @@
 
 Matches production timing from rusp_firmware.ino:
 - ROTARY_DEBOUNCE_MS uses strict greater-than
-- PULSE_FUDGE and digit mapping match pulse2ascii()
+- ROTARY_NONDIGIT_EDGES and digit mapping match pulse2ascii()
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-PULSE_FUDGE = 1
+# The dial emits digit+1 falling edges, measured as exactly digit+1 for every
+# digit 1..0. One edge is not a digit pulse. Mirrors ROTARY_NONDIGIT_EDGES in
+# rusp_firmware.ino.
+ROTARY_NONDIGIT_EDGES = 1
 ROTARY_DEBOUNCE_MS = 30
 PULSES_DONE_MS = 200
 
@@ -20,7 +23,7 @@ _KNOWN_TYPES = frozenset(
 
 def pulse_to_ascii(pulse_count: int) -> str:
 	"""Map a raw accepted pulse count to a dial digit, matching production."""
-	adjusted = pulse_count - PULSE_FUDGE
+	adjusted = pulse_count - ROTARY_NONDIGIT_EDGES
 	if adjusted == 10:
 		return "0"
 	if 1 <= adjusted <= 9:

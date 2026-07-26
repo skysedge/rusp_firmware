@@ -7,13 +7,13 @@ can be distinguished while tuning ROTARY_DEBOUNCE_MS.
 Failure modes when regressions occur:
 - Mis-parsed lines hide events (event counts drop / fields become None).
 - Wrong debounce replay accepts bounce as pulses or drops real pulses.
-- Wrong digit mapping (fudge/0) reports the wrong ASCII digit for a dial.
+- Wrong digit mapping (non-digit edge/0) reports the wrong ASCII digit.
 """
 
 import unittest
 
 from pulse_analysis import (
-	PULSE_FUDGE,
+	ROTARY_NONDIGIT_EDGES,
 	ROTARY_DEBOUNCE_MS,
 	DialSession,
 	parse_line,
@@ -76,9 +76,9 @@ class ParseLineTests(unittest.TestCase):
 
 class PulseToAsciiTests(unittest.TestCase):
 	def test_maps_production_pulse_counts(self):
-		# Guards the same mapping as rusp_firmware pulse2ascii + PULSE_FUDGE.
+		# Guards the same mapping as rusp_firmware pulse2ascii.
 		# Failure: dialed digit display disagrees with production firmware.
-		self.assertEqual(PULSE_FUDGE, 1)
+		self.assertEqual(ROTARY_NONDIGIT_EDGES, 1)
 		cases = [
 			(2, "1"),
 			(3, "2"),

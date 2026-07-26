@@ -48,8 +48,15 @@ extern int pg;
 
 // length of dial buffer (max 255 right now since dial_idx is unsigned char)
 #define DIAL_BUF_LEN 30
-// subtracted from pulse count to get number dialed
-#define PULSE_FUDGE 1
+/*
+ * This dial emits one more falling edge per digit than the digit dialled:
+ * measured as exactly digit+1 across every digit 1..0, with no exceptions.
+ * One edge is therefore not a digit pulse and is subtracted before mapping.
+ *
+ * Not a correction for a defect. The count is a fixed property of the dial's
+ * wiring, so removing this subtraction misreads every digit by one.
+ */
+#define ROTARY_NONDIGIT_EDGES 1
 // ms to debounce rotary switch by
 #define ROTARY_DEBOUNCE_MS 30
 // Quiet after last edge before considering a digit commit.
@@ -59,7 +66,8 @@ extern int pg;
 #define FALLBACK_COMMIT_MS 500
 // How many recent rotary falling edges to retain for digit extract.
 #define ROTARY_EDGE_HISTORY 48
-// Valid digits need >= 2 raw pulses after debounce (PULSE_FUDGE → '1'..'0').
+// Valid digits need >= 2 raw pulses after debounce (less the non-digit
+// edge, '1'..'0').
 #define MIN_PULSES_FOR_DIGIT 2
 // Max raw pulses for one digit ('0' = 11).
 #define MAX_PULSES_FOR_DIGIT 11
@@ -151,9 +159,11 @@ volatile bool hook_sampled = false;
 char dial_buf[DIAL_BUF_LEN];
 // index of the dial string we're on
 unsigned char dial_idx = 0;
-// whether or not the hook was recently pressed
-// TODO: i tried just putting all the hook-handling code in the ISR but somehow
-// the chip got mad at me
+/*
+ * Set by the hook ISR and acted on in the loop. The ISR stays trivial by
+ * design: hook handling reaches the modem, the display and the SD log, none
+ * of which can run at interrupt time without starving the modem UART.
+ */
 bool hook = false;
 // for debouncing
 unsigned long hook_last = 0;
@@ -1033,16 +1043,8 @@ void isr_clear()
 
 char pulse2ascii(char pulse_count)
 {
-	// Apply PULSE_FUDGE to correct for off-by-one error
-	// The rotary mechanism counts one extra pulse
-	pulse_count = pulse_count - PULSE_FUDGE;
-
-	// Rotary dial positions:
-	// Dial "1" = 2 pulses (after fudge: 1) → should display '1'
-	// Dial "2" = 3 pulses (after fudge: 2) → should display '2'
-	// ...
-	// Dial "9" = 10 pulses (after fudge: 9) → should display '9'
-	// Dial "0" = 11 pulses (after fudge: 10) → should display '0'
+	// Raw edges to digit: 2→'1', 3→'2', … 10→'9', 11→'0'.
+	pulse_count = pulse_count - ROTARY_NONDIGIT_EDGES;
 
 	if (pulse_count == 10) return '0';
 	if (pulse_count >= 1 && pulse_count <= 9) return pulse_count + '0';

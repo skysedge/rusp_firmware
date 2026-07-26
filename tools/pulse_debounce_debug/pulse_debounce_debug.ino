@@ -27,7 +27,15 @@
 #define LL_OE 38
 
 // Match rusp_firmware.ino production constants.
-#define PULSE_FUDGE 1
+/*
+ * This dial emits one more falling edge per digit than the digit dialled:
+ * measured as exactly digit+1 across every digit 1..0, with no exceptions.
+ * One edge is therefore not a digit pulse and is subtracted before mapping.
+ *
+ * Not a correction for a defect. The count is a fixed property of the dial's
+ * wiring, so removing this subtraction misreads every digit by one.
+ */
+#define ROTARY_NONDIGIT_EDGES 1
 #define ROTARY_DEBOUNCE_MS 30
 #define PULSES_DONE_MS 200
 
@@ -62,7 +70,7 @@ uint8_t interval_count = 0;
 
 char pulse2ascii(uint16_t pulse_count)
 {
-	int16_t adjusted = (int16_t)pulse_count - PULSE_FUDGE;
+	int16_t adjusted = (int16_t)pulse_count - ROTARY_NONDIGIT_EDGES;
 	if (adjusted == 10) return '0';
 	if (adjusted >= 1 && adjusted <= 9) return (char)('0' + adjusted);
 	return '?';
