@@ -1863,8 +1863,8 @@ void loop()
 
 	if (hook && hook_drives_call) {
 		/*
-		 * Capture awake state before wake: hangup always runs; dial/answer
-		 * only if the display was already on (hook_action.py).
+		 * Capture awake state before wake: hangup and answer always run;
+		 * dial only if the display was already on (hook_action.py).
 		 */
 		const bool was_awake = display_awake;
 		ui_wake();
@@ -1902,11 +1902,16 @@ void loop()
 				ui_set_status("Call ended");
 			else
 				ui_set_status("Hangup fail");
-		} else if (!was_awake) {
-			/* Wake only — do not dial or answer from a dark display. */
-			call_log("HOOK_WAKE_ONLY");
 		} else if (stat == LARA_RINGING || ringing) {
 			/*
+			 * Checked before the was_awake gate below. The panel
+			 * sleeps while a call rings, so gating answer on it made
+			 * picking up take two presses — one to wake, one to
+			 * answer, measured four seconds apart on hardware. The
+			 * gate exists to stop a stray press placing a call; a
+			 * stray press on a ringing phone only accepts a call
+			 * already being offered.
+			 *
 			 * `ringing` is the answer-side fallback for a CPAS read
 			 * that timed out. Hangup already trusts
 			 * outbound_call_active the same way; without this a
@@ -1926,6 +1931,9 @@ void loop()
 				call_session_end("ATA failed");
 				ui_set_status("Answer fail");
 			}
+		} else if (!was_awake) {
+			/* Wake only — do not dial from a dark display. */
+			call_log("HOOK_WAKE_ONLY");
 		} else if (stat == LARA_READY) {
 			if (!has_digits) {
 				/*

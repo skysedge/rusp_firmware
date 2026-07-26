@@ -184,14 +184,47 @@ class HookActionTests(unittest.TestCase):
 			HookAction.ANSWER,
 		)
 
-	def test_no_answer_when_display_asleep(self):
-		# Why: answering is call start — requires display on.
-		# Failure: ATA while the panel is still dark.
+	def test_answer_when_display_asleep(self):
+		# Why: the display sleeps while a call rings, so requiring it to be
+		# awake made answering take two presses -- one to wake, one to
+		# answer. Measured on hardware as a 4 s gap between the two.
+		# The awake rule exists to stop a stray press placing a call; a
+		# stray press on a ringing phone only answers one already offered.
+		# Failure: WAKE_ONLY, and the caller keeps ringing.
 		self.assertEqual(
 			resolve_hook_action(
 				cpas="3",
 				outbound_call_active=False,
 				has_digits=False,
+				display_awake=False,
+			),
+			HookAction.ANSWER,
+		)
+
+	def test_answer_when_display_asleep_via_ringing_flag(self):
+		# Why: ringing survives a CPAS read that timed out, so answering
+		# from sleep must not depend on CPAS having succeeded.
+		# Failure: WAKE_ONLY whenever CPAS is unknown during a ring.
+		self.assertEqual(
+			resolve_hook_action(
+				cpas="2",
+				outbound_call_active=False,
+				has_digits=False,
+				display_awake=False,
+				ringing=True,
+			),
+			HookAction.ANSWER,
+		)
+
+	def test_still_no_dial_when_display_asleep_and_not_ringing(self):
+		# Why: relaxing the awake rule for answering must not relax it for
+		# dialling, which is the case it was written for.
+		# Failure: ATD fires from a dark screen on a pocket press.
+		self.assertEqual(
+			resolve_hook_action(
+				cpas="0",
+				outbound_call_active=False,
+				has_digits=True,
 				display_awake=False,
 			),
 			HookAction.WAKE_ONLY,
@@ -278,9 +311,11 @@ class RingFallbackTests(unittest.TestCase):
 			HookAction.HANGUP,
 		)
 
-	def test_ring_still_requires_an_awake_display(self):
-		# Why: answering is call start, so the display gate still applies.
-		# Failure: ATA from a dark screen.
+	def test_ring_answers_from_a_dark_display(self):
+		# Why: the panel sleeps while a call rings, so gating answer on it
+		# made picking up take two presses. Covers the ringing fallback
+		# specifically, where CPAS ('2') gave no usable answer.
+		# Failure: WAKE_ONLY, and the caller keeps ringing.
 		self.assertEqual(
 			resolve_hook_action(
 				cpas="2",
@@ -289,7 +324,7 @@ class RingFallbackTests(unittest.TestCase):
 				ringing=True,
 				display_awake=False,
 			),
-			HookAction.WAKE_ONLY,
+			HookAction.ANSWER,
 		)
 
 	def test_unknown_cpas_without_ring_is_still_unhandled(self):

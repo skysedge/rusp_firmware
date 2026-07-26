@@ -4,8 +4,10 @@ Why: after ATD the modem may still report CPAS ready (0) while an outbound
 call is up. Firmware that trusts only CPAS==4 will re-dial instead of hang up,
 leaving the OLED on DIALING/DIAL OK.
 
-Display gating: hangup always runs; dial/answer only when the display is on.
-A press while the display is asleep wakes it but must not start a call.
+Display gating: hangup and answer always run; dial only when the display is
+on. A press while the display is asleep wakes it but must not place a call.
+Answer is exempt because the panel sleeps while a call rings, and gating it
+made picking up take two presses.
 """
 
 from __future__ import annotations
@@ -48,14 +50,24 @@ def resolve_hook_action(
 	if outbound_call_active or cpas == "4":
 		return HookAction.HANGUP
 
-	# Call start (answer / dial) requires an already-awake display.
+	# Answer before the display gate, and before dial.
+	#
+	# Before dial: digits left in the buffer must not turn an incoming call
+	# into an outgoing one.
+	#
+	# Before the display gate: the panel sleeps while a call is ringing, so
+	# gating answer on it made picking up take two presses -- one to wake,
+	# one to answer. The gate exists to stop a stray press placing a call,
+	# and a stray press on a ringing phone only accepts a call already being
+	# offered, which is both cheaper and undoable.
+	if cpas == "3" or ringing:
+		return HookAction.ANSWER
+
+	# Dial still requires an already-awake display, which is the case the
+	# gate was written for.
 	if not display_awake:
 		return HookAction.WAKE_ONLY
 
-	# Answer is checked before dial: digits left in the buffer must not turn
-	# an incoming call into an outgoing one.
-	if cpas == "3" or ringing:
-		return HookAction.ANSWER
 	if cpas == "0":
 		if has_digits:
 			return HookAction.DIAL
