@@ -38,12 +38,26 @@ int lara_on(
 	HardwareSerial *serial, HardwareSerial *console, unsigned long timeout
 );
 
-// handle any unsolicited result codes that may have arrived
-// also passes lara's serial port through to the console and vice versa
-void lara_unsolicited(bool *ringing, unsigned long *last_ring_time);
+/*
+ * Handle URCs and pass modem→console bytes through.
+ * If call_ended is non-NULL, set *call_ended on NO CARRIER or UCALLSTAT 6.
+ * If ucall_stat is non-NULL, set it to the latest +UCALLSTAT <stat> (0..7),
+ * or leave unchanged when no UCALLSTAT URC was seen this call.
+ */
+void lara_unsolicited(
+	bool *ringing, unsigned long *last_ring_time,
+	bool *call_ended, int *ucall_stat
+);
 
 // check if in a call, etc.
 lara_activity lara_status();
+
+/*
+ * Query AT+CLCC and return the preferred call <stat> (0 active, 2 dialling,
+ * 3 alerting, 4 incoming, …), or -1 if no calls / error.
+ * Used to detect answered calls when +UCALLSTAT was swallowed by an AT wait.
+ */
+int lara_clcc_stat(void);
 
 // answer an incoming call
 int lara_answer();
@@ -53,6 +67,15 @@ int lara_hangup();
 
 // dial a phone number
 int lara_dial(char *dial_string);
+
+/*
+ * Query AT+CSQ. Returns RSSI 0..31, or 99 if unknown / error.
+ * Maps to OLED bars via lara_signal_bars().
+ */
+int lara_signal_rssi(void);
+
+/* Map CSQ RSSI to 0..4 bars (99/≤0 → 0). */
+int lara_signal_bars(int rssi);
 
 // power off
 int lara_off(unsigned long timeout);
