@@ -68,25 +68,46 @@ void lara_unsolicited(
 // check if in a call, etc.
 lara_activity lara_status();
 
-/*
- * Query AT+CLCC and return the preferred call <stat> (0 active, 2 dialling,
- * 3 alerting, 4 incoming, …), or -1 if no calls / error.
- * Used to detect answered calls when +UCALLSTAT was swallowed by an AT wait.
- */
 /* 3GPP 27.007 +CLCC <dir> and <stat> values used to spot an incoming call. */
 #define LARA_CLCC_DIR_INCOMING 1
 #define LARA_CLCC_STATE_INCOMING 4
 #define LARA_CLCC_STATE_WAITING 5
 
 /*
- * Poll the call list. Returns the preferred <stat>, or -1 on failure.
+ * The two periodic pollers. Both are asynchronous, and deliberately have no
+ * blocking form: they fire on a timer rather than on anything the user did,
+ * so a blocking one is a stall nobody asked for. The bell LED stops toggling
+ * and rotary dial pulses are delayed for its duration. See the async engine
+ * comment in lara.cpp for why the button-driven commands are not the same
+ * case.
+ *
+ * Both share one transaction slot, so a *_start() returns false when the
+ * other poller — or a result still unclaimed — holds it; the caller retries.
+ * The matching *_take() returns true on exactly one call per completed
+ * transaction, whether it ended in a reply, an error or a timeout, which is
+ * what lets a caller count polls rather than loop iterations.
+ *
+ * Serviced from lara_unsolicited(), so the loop needs no extra pump.
+ */
+
+/*
+ * Poll the call list. stat_out receives the preferred <stat> (0 active,
+ * 2 dialling, 3 alerting, 4 incoming, …), or -1 if no calls / error.
  *
  * incoming_out (may be NULL) is set when any entry is a mobile-terminated
  * call that is alerting — state 4, or state 5 when another call is already
  * up. Call waiting is the only announcement a return call gets while an
  * earlier call is still active.
  */
-int lara_clcc_stat(bool *incoming_out);
+bool lara_clcc_poll_start(void);
+bool lara_clcc_poll_take(int *stat_out, bool *incoming_out);
+
+/*
+ * Abandon an outstanding call-state poll. Call when the call session it was
+ * asked about is torn down or replaced, so its reply cannot be applied to a
+ * different session.
+ */
+void lara_clcc_poll_cancel(void);
 
 // answer an incoming call
 int lara_answer();
@@ -102,10 +123,11 @@ int lara_hangup();
 int lara_dial(const char *dial_string, uint8_t buf_len);
 
 /*
- * Query AT+CSQ. Returns RSSI 0..31, or 99 if unknown / error.
- * Maps to OLED bars via lara_signal_bars().
+ * Poll AT+CSQ. rssi_out receives 0..31, or 99 if unknown / error.
+ * Maps to OLED bars via lara_signal_bars(). See lara_clcc_poll_start().
  */
-int lara_signal_rssi(void);
+bool lara_csq_poll_start(void);
+bool lara_csq_poll_take(int *rssi_out);
 
 /* Map CSQ RSSI to 0..4 bars (99/≤0 → 0). */
 int lara_signal_bars(int rssi);

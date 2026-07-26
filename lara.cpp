@@ -17,6 +17,8 @@ static bool urc_pending_call_ended = false;
 static int urc_pending_stat = -1;
 
 static void lara_urc_on_byte(char c);
+static void lara_async_service(void);
+static void lara_async_settle(void);
 
 
 static char lara_read_byte(void)
@@ -165,11 +167,236 @@ static int lara_at_response(
 /* Write "AT<command>\r". command may be "" for a bare AT ping. */
 static void lara_send_at(const char *command)
 {
+	/*
+	 * Every command in this file transmits through here, which is what
+	 * makes it the one place that can guarantee no asynchronous
+	 * transaction is still outstanding. See lara_async_settle().
+	 */
+	lara_async_settle();
 	lara.s->write("AT");
 	if (command && command[0])
 		lara.s->write(command);
 	lara.s->write('\r');
 	lara.s->flush();
+}
+
+
+/*
+ * Non-blocking AT transactions.
+ *
+ * Only the two periodic pollers use this: +CSQ behind the signal meter, and
+ * +CLCC while a call session is up. Those are the transactions nobody asked
+ * for. They fire on a timer, and each one held loop() for a modem round
+ * trip — or for the full second the timeout allows when the modem stayed
+ * quiet. Nothing else ran in that window, so the bell LED stopped toggling
+ * and rotary dial pulses waited on it.
+ *
+ * lara_dial(), lara_answer(), lara_hangup(), lara_status() and all of
+ * lara_on() / lara_off() stay synchronous deliberately. Each is one shot and
+ * driven by a button or the hook switch, so its stall lands where the user
+ * is already waiting for the phone to do the thing they just asked it to do.
+ * Converting them would mean rebuilding the hook handler as a state machine
+ * to buy latency in the one place nobody can perceive it.
+ *
+ * Mirrors tools/pulse_monitor/at_async.py.
+ */
+
+enum {
+	LARA_ASYNC_IDLE = 0,
+	LARA_ASYNC_WAITING,	/* command sent, no final result code yet */
+	LARA_ASYNC_DONE,	/* result held until its owner claims it */
+};
+
+/*
+ * Longest asynchronous response line kept intact; longer lines are truncated
+ * rather than split, so the tail of one line can never start another and be
+ * read as a result code. Both async commands are far shorter than this.
+ */
+#define LARA_ASYNC_LINE_LEN 64
+
+static struct {
+	uint8_t state;
+	int8_t rc;
+	bool echo_pending;
+	uint8_t len;
+	/* Literal with static storage duration; compared, never copied. */
+	const char *command;
+	/*
+	 * Per-command handler for information lines. It also identifies the
+	 * owner of the transaction, which is what stops one poller claiming
+	 * the other's result — the two never share a handler.
+	 */
+	void (*on_line)(const char *line);
+	unsigned long deadline;
+	char line[LARA_ASYNC_LINE_LEN];
+} lara_async;
+
+
+/**
+ * Start an asynchronous transaction. False when the engine is not free.
+ *
+ * Refused while a result is unclaimed, not only while one is in flight: the
+ * result belongs to whoever submitted it, and both pollers share the engine.
+ *
+ * This is the only place transaction state is reset. Clearing it on
+ * completion as well would look safer, but it makes each reset untestable on
+ * its own, because the other one covers for a missing one.
+ */
+static bool lara_async_submit(
+	const char *command, void (*on_line)(const char *line),
+	unsigned long timeout_ms
+)
+{
+	if (!lara.s || lara_async.state != LARA_ASYNC_IDLE)
+		return false;
+
+	lara_async.command = command;
+	lara_async.on_line = on_line;
+	lara_async.echo_pending = (command != nullptr);
+	lara_async.len = 0;
+	lara_send_at(command);
+	/* Timed from the last byte out, since lara_send_at() flushes. */
+	lara_async.deadline = millis() + timeout_ms;
+	lara_async.state = LARA_ASYNC_WAITING;
+	return true;
+}
+
+
+/*
+ * End the transaction, holding the result for its owner.
+ *
+ * A disowned transaction goes straight back to IDLE instead: nobody is left
+ * to claim its result, and a result nobody can claim would hold the engine
+ * for good.
+ */
+static void lara_async_finish(int8_t rc)
+{
+	lara_async.rc = rc;
+	lara_async.state = lara_async.on_line
+		? LARA_ASYNC_DONE : LARA_ASYNC_IDLE;
+}
+
+
+/**
+ * Consume whatever has arrived, then judge the clock.
+ *
+ * Bytes are taken before the deadline is tested because a reply that landed
+ * just before it is real data; discarding it would count a healthy poll as
+ * an absent one.
+ *
+ * Every byte goes through lara_read_byte(), which is what hands it to the
+ * URC matcher — exactly as the blocking reader does. That matcher is
+ * byte-oriented and carries state between bytes, so the engine cannot filter
+ * what it forwards: a "+UCALLSTAT:" capture closes on its CR, and
+ * unsolicited output is never retransmitted.
+ *
+ * Reading stops at the final result code. What follows belongs to the drain
+ * in lara_unsolicited(), which is where a URC arriving on the heels of the
+ * reply has to be seen.
+ */
+static void lara_async_service(void)
+{
+	if (lara_async.state != LARA_ASYNC_WAITING)
+		return;
+
+	/*
+	 * The deadline below is evaluated even with no serial attached, so a
+	 * transaction can always reach an end state. lara_async_settle() spins
+	 * on this function and would not otherwise be guaranteed to return.
+	 */
+	while (lara.s && lara.s->available()) {
+		char c = lara_read_byte();
+		if (c != '\r' && c != '\n') {
+			if (lara_async.len + 1 < LARA_ASYNC_LINE_LEN)
+				lara_async.line[lara_async.len++] = c;
+			continue;
+		}
+		if (lara_async.len == 0)
+			continue;
+		lara_async.line[lara_async.len] = '\0';
+		lara_async.len = 0;
+		if (lara.cons)
+			lara.cons->println(lara_async.line);
+		if (lara_async.echo_pending
+		    && lara_line_is_echo(lara_async.line, lara_async.command)) {
+			lara_async.echo_pending = false;
+			continue;
+		}
+		/*
+		 * Never the call-progress dialect: neither +CSQ nor +CLCC can
+		 * produce NO CARRIER, so one arriving here is a dropped call
+		 * announcing itself and belongs to the URC path alone.
+		 */
+		uint8_t fin = lara_final_code(lara_async.line, false);
+		if (fin != LARA_FINAL_NONE) {
+			lara_async_finish(
+				fin == LARA_FINAL_OK
+					? LARA_RC_OK : LARA_RC_ERROR
+			);
+			return;
+		}
+		if (lara_async.on_line)
+			lara_async.on_line(lara_async.line);
+	}
+
+	/* Cast keeps the comparison correct across the 49-day rollover. */
+	if ((long)(millis() - lara_async.deadline) >= 0)
+		lara_async_finish(LARA_RC_TIMEOUT);
+}
+
+
+/**
+ * Claim a completed result, freeing the engine. False until then.
+ *
+ * on_line names the owner. A poller that asks for a result belonging to the
+ * other one is told there is nothing to take, so neither can consume the
+ * other's reply or free the engine out from under it.
+ */
+static bool lara_async_take(void (*on_line)(const char *line), int8_t *rc_out)
+{
+	if (lara_async.state != LARA_ASYNC_DONE || lara_async.on_line != on_line)
+		return false;
+	lara_async.state = LARA_ASYNC_IDLE;
+	if (rc_out)
+		*rc_out = lara_async.rc;
+	return true;
+}
+
+
+/**
+ * Give up ownership of the outstanding transaction, without waiting for it.
+ *
+ * The reply is still read to completion — the stream has to stay in step for
+ * whatever reads next — but nothing is done with it and the result is
+ * dropped instead of being offered to a caller that no longer has a use for
+ * it. Any result already sitting unclaimed goes the same way.
+ */
+static void lara_async_disown(void)
+{
+	if (lara_async.state == LARA_ASYNC_DONE)
+		lara_async.state = LARA_ASYNC_IDLE;
+	lara_async.on_line = nullptr;
+}
+
+
+/**
+ * Drive an in-flight transaction to completion, blocking if it has to.
+ *
+ * Every synchronous send calls this. One UART cannot carry two unfinished
+ * transactions: a poll's reply would still be arriving when ATD's matcher
+ * started reading, and its OK would be accepted as the dial's own result —
+ * precisely the failure lara_at_response() was written to end.
+ *
+ * Absorbing the poll rather than discarding it keeps two things true at
+ * once. The stream is back in sync for the synchronous command, and the
+ * poller still receives its result, so the +CLCC absence count neither skips
+ * a poll nor counts one twice. Bounded by the deadline that transaction
+ * already carries, so the worst case is the wait it would have cost anyway.
+ */
+static void lara_async_settle(void)
+{
+	while (lara_async.state == LARA_ASYNC_WAITING)
+		lara_async_service();
 }
 
 
@@ -470,11 +697,21 @@ void lara_unsolicited(
 	bool *call_ended, int *ucall_stat
 )
 {
+	lara_async_service();
+
 	/*
 	 * Drain the whole modem RX buffer each loop so multi-byte URCs are not
 	 * stretched across many iterations (and so NO CARRIER is not missed).
+	 *
+	 * The drain and the async engine read the same UART, so only one of
+	 * them may hold it. While a transaction is in flight the bytes are its
+	 * reply: taking them here would strand the poller until its deadline
+	 * and leave the stream out of step. Nothing is lost by deferring,
+	 * because lara_async_service() hands every byte it takes to the same
+	 * URC matcher this loop feeds.
 	 */
-	while (lara.s && lara.s->available()) {
+	while (lara.s && lara_async.state != LARA_ASYNC_WAITING
+	       && lara.s->available()) {
 		char c = (char)lara.s->read();
 		if (lara.cons)
 			lara.cons->write(c);
@@ -597,47 +834,83 @@ static int prefer_clcc_stat(const int *stats, unsigned n)
 
 
 /*
- * +CLCC returns one information line per call leg, so it collects rows
- * itself instead of using lara_at()'s single-line capture. It still reads
- * through the final result code, which is what keeps the stream in sync.
+ * +CLCC reports one information line per call leg, so rows accumulate here
+ * as they arrive. Reset by lara_clcc_poll_start().
  */
-int lara_clcc_stat(bool *incoming_out)
+static int lara_async_clcc_stats[6];
+static uint8_t lara_async_clcc_nstats;
+static bool lara_async_clcc_incoming;
+
+
+/* Collect one +CLCC row. Mirrors clcc_has_incoming() in clcc.py. */
+static void lara_clcc_async_line(const char *line)
 {
-	char line[LARA_LINE_LEN];
-	int stats[6];
-	unsigned nstats = 0;
+	int dir = 0;
+	int st = 0;
 
-	if (incoming_out != nullptr)
-		*incoming_out = false;
-	if (!lara.s)
-		return -1;
+	if (!parse_clcc_line(line, &dir, &st))
+		return;
+	if (dir == LARA_CLCC_DIR_INCOMING
+	    && (st == LARA_CLCC_STATE_INCOMING
+	        || st == LARA_CLCC_STATE_WAITING))
+		lara_async_clcc_incoming = true;
+	if (lara_async_clcc_nstats < (uint8_t)(sizeof(lara_async_clcc_stats)
+	                                       / sizeof(lara_async_clcc_stats[0])))
+		lara_async_clcc_stats[lara_async_clcc_nstats++] = st;
+}
 
-	lara_send_at("+CLCC");
-	unsigned long deadline = millis() + LARA_AT_TIMEOUT_MS;
 
-	while (lara_read_line(line, sizeof(line), deadline)) {
-		if (lara.cons)
-			lara.cons->println(line);
-		if (lara_line_is_echo(line, "+CLCC"))
-			continue;
-		uint8_t fin = lara_final_code(line, false);
-		if (fin == LARA_FINAL_OK)
-			return prefer_clcc_stat(stats, nstats);
-		if (fin == LARA_FINAL_ERROR)
-			return -1;
-		int dir = 0;
-		int st = 0;
-		if (!parse_clcc_line(line, &dir, &st))
-			continue;
-		if (incoming_out != nullptr
-		    && dir == LARA_CLCC_DIR_INCOMING
-		    && (st == LARA_CLCC_STATE_INCOMING
-		        || st == LARA_CLCC_STATE_WAITING))
-			*incoming_out = true;
-		if (nstats < (unsigned)(sizeof(stats) / sizeof(stats[0])))
-			stats[nstats++] = st;
-	}
-	return -1;
+bool lara_clcc_poll_start(void)
+{
+	if (!lara_async_submit(
+		"+CLCC", lara_clcc_async_line, LARA_AT_TIMEOUT_MS
+	))
+		return false;
+	lara_async_clcc_nstats = 0;
+	lara_async_clcc_incoming = false;
+	return true;
+}
+
+
+bool lara_clcc_poll_take(int *stat_out, bool *incoming_out)
+{
+	int8_t rc;
+
+	if (!lara_async_take(lara_clcc_async_line, &rc))
+		return false;
+	/*
+	 * Rows seen before the final code still count, whatever that code
+	 * turned out to be: a reply cut short by a timeout is still evidence
+	 * of the call it described. <stat> is reported only for a reply that
+	 * completed, because preferring among a partial set of legs can pick
+	 * the wrong one.
+	 */
+	if (incoming_out)
+		*incoming_out = lara_async_clcc_incoming;
+	if (stat_out)
+		*stat_out = (rc == LARA_RC_OK)
+			? prefer_clcc_stat(
+				lara_async_clcc_stats, lara_async_clcc_nstats
+			)
+			: -1;
+	return true;
+}
+
+
+void lara_clcc_poll_cancel(void)
+{
+	/*
+	 * A reply describes the session that was up when it was asked for.
+	 * Once that session is torn down or replaced, applying it would
+	 * repaint the previous call's state over the current one — a call just
+	 * answered reported as still ringing, for instance.
+	 *
+	 * Ownership is checked first so tearing down a call cannot throw away
+	 * the signal meter's reading: a +CSQ can be in flight when a session
+	 * begins.
+	 */
+	if (lara_async.on_line == lara_clcc_async_line)
+		lara_async_disown();
 }
 
 
@@ -657,21 +930,39 @@ int lara_hangup()
 }
 
 
-int lara_signal_rssi(void)
+/* Async +CSQ result, valid once lara_csq_poll_take() reports it. */
+static int lara_async_rssi;
+
+
+static void lara_csq_async_line(const char *line)
 {
-	char resp[24];
-
-	if (!lara.s)
-		return 99;
-	if (lara_at("+CSQ", "+CSQ:", resp, sizeof(resp), LARA_AT_TIMEOUT_MS)
-	    != LARA_RC_OK)
-		return 99;
-
+	if (strncasecmp_P(line, PSTR("+CSQ:"), 5) != 0)
+		return;
 	/* "+CSQ: <rssi>,<ber>" — 99 already means "not known" to callers. */
-	const char *p = lara_payload_after(resp, "+CSQ:");
-	if (*p < '0' || *p > '9')
-		return 99;
-	return atoi(p);
+	const char *p = lara_payload_after(line, "+CSQ:");
+	if (*p >= '0' && *p <= '9')
+		lara_async_rssi = atoi(p);
+}
+
+
+bool lara_csq_poll_start(void)
+{
+	if (!lara_async_submit("+CSQ", lara_csq_async_line, LARA_AT_TIMEOUT_MS))
+		return false;
+	lara_async_rssi = 99;
+	return true;
+}
+
+
+bool lara_csq_poll_take(int *rssi_out)
+{
+	int8_t rc;
+
+	if (!lara_async_take(lara_csq_async_line, &rc))
+		return false;
+	if (rssi_out)
+		*rssi_out = (rc == LARA_RC_OK) ? lara_async_rssi : 99;
+	return true;
 }
 
 

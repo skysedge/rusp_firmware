@@ -310,10 +310,13 @@ static void call_logf_P(const char *fmt, ...)
  *
  * Every teardown path must clear the same fields, including the CLCC
  * absence counter — a count left over from the previous call would make the
- * next session declare itself over early.
+ * next session declare itself over early. An outstanding CLCC poll is one of
+ * those fields: its reply describes this session, so it must not survive
+ * into the next one.
  */
 static void call_session_end(const char *reason)
 {
+	lara_clcc_poll_cancel();
 	outbound_call_active = false;
 	saw_in_call_cpas = false;
 	ringing = false;
@@ -333,6 +336,7 @@ static void call_session_end(const char *reason)
  */
 static void call_session_begin(const char *reason)
 {
+	lara_clcc_poll_cancel();
 	outbound_call_active = true;
 	saw_in_call_cpas = false;
 	ringing = false;
@@ -347,16 +351,56 @@ static void call_session_begin(const char *reason)
 }
 
 
-static int ui_signal_bars_now(unsigned long now_ms)
+/**
+ * Keep the cached signal reading current without stalling the loop.
+ *
+ * The meter always draws from the cache, so the +CSQ behind it has no claim
+ * on loop() at all — it is refreshed every SIGNAL_UI_REFRESH_MS and nobody
+ * is waiting on the result.
+ *
+ * Called every iteration rather than from ui_refresh(), for two reasons. A
+ * completed result holds the shared modem transaction slot until it is
+ * claimed, which would block the call-state poll; and ui_refresh() does not
+ * run at all while the panel is asleep, so the result could sit unclaimed
+ * indefinitely.
+ *
+ * ui_signal_last_ms is stamped when a reading lands, not when one is asked
+ * for, so a refused submit retries on the next iteration instead of waiting
+ * out another full refresh interval.
+ */
+static void ui_signal_service(unsigned long now_ms)
 {
-	if (ui_signal_last_ms == 0
-	    || (now_ms - ui_signal_last_ms) >= SIGNAL_UI_REFRESH_MS
-	    || now_ms < ui_signal_last_ms) {
-		int rssi = lara_signal_rssi();
-		ui_signal_bars_cached = lara_signal_bars(rssi);
+	int rssi;
+
+	if (lara_csq_poll_take(&rssi)) {
+		const int bars = lara_signal_bars(rssi);
+		/*
+		 * A reading no longer lands inside ui_refresh(), so ask for a
+		 * repaint when it changes something. Without this the new value
+		 * waits for the next BATT_UI_REFRESH_MS tick and the meter can
+		 * show a reading half again as old as it used to.
+		 */
+		if (bars != ui_signal_bars_cached)
+			ui_dirty = true;
+		ui_signal_bars_cached = bars;
 		ui_signal_last_ms = now_ms;
 	}
-	return ui_signal_bars_cached;
+
+	/* Unchanged: no meter refresh while the panel is blank. */
+	if (!display_awake)
+		return;
+	/*
+	 * Hold off while a call is up. Both pollers share one transaction
+	 * slot, and a +CSQ in flight can delay the call-state poll by its
+	 * whole timeout. Call state is the reading that has to stay current.
+	 */
+	if (outbound_call_active || ringing)
+		return;
+
+	if (ui_signal_last_ms == 0
+	    || (now_ms - ui_signal_last_ms) >= SIGNAL_UI_REFRESH_MS
+	    || now_ms < ui_signal_last_ms)
+		lara_csq_poll_start();
 }
 
 static void ui_wake(void);
@@ -376,7 +420,7 @@ static void ui_refresh(void)
 	unsigned long now = millis();
 	int pct = battery_percent_cached(now, BATT_UI_REFRESH_MS);
 	bool charging = battery_is_charging();
-	int bars = ui_signal_bars_now(now);
+	int bars = ui_signal_bars_cached;
 	const char *raw =
 		(dial_idx > 0 && dial_buf[0] != '\0') ? dial_buf : "";
 	char formatted[40];
@@ -1608,12 +1652,38 @@ void loop()
 	 * ran ~24 s past the caller hanging up, stopped only by RING_MAX_MS.
 	 * The same poll already tears an outbound call down correctly when its
 	 * end URC goes missing. See call_end_detect.clcc_absent_ends_call().
+	 *
+	 * Issued asynchronously: this fires on a timer while a call is up, and
+	 * blocking the loop on it for the round trip stopped the bell LED
+	 * toggling and delayed rotary dial pulses.
 	 */
 	if ((outbound_call_active || ringing)
 	    && (t - last_call_cpas_poll_ms >= CALL_CPAS_POLL_MS)) {
-		last_call_cpas_poll_ms = t;
-		bool clcc_incoming = false;
-		int clcc = lara_clcc_stat(&clcc_incoming);
+		/*
+		 * Stamp the poll only once the command is actually on the wire.
+		 * A submit refused because the modem transaction slot is busy is
+		 * a poll that never happened, and consuming the tick for it would
+		 * quietly stretch the interval.
+		 */
+		if (lara_clcc_poll_start())
+			last_call_cpas_poll_ms = t;
+	}
+
+	/*
+	 * The reply lands some iterations later; act on it then. The result is
+	 * claimed either way, because leaving it unclaimed would hold the
+	 * transaction slot, but it is only applied while the session it
+	 * describes is still up — a reply about a call a URC has already torn
+	 * down would repaint "In call" over "Call ended".
+	 *
+	 * Claiming happens exactly once per completed transaction, including
+	 * one that timed out, which is what keeps clcc_absent_polls counting
+	 * polls rather than loop iterations.
+	 */
+	bool clcc_incoming = false;
+	int clcc = -1;
+	if (lara_clcc_poll_take(&clcc, &clcc_incoming)
+	    && (outbound_call_active || ringing)) {
 		if (clcc >= 0)
 			clcc_absent_polls = 0;
 		else if (clcc_absent_polls < CLCC_ABSENT_LIMIT)
@@ -1663,6 +1733,12 @@ void loop()
 			ui_set_status("Call ended");
 		}
 	}
+
+	/*
+	 * After the call-state poll, which has the stronger claim on the
+	 * shared modem transaction slot.
+	 */
+	ui_signal_service(t);
 
 	if (ringing) {
 		// Start ringing timer on first ring

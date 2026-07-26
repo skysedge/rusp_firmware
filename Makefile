@@ -39,8 +39,18 @@ MEMCHECK_DIR := tools/memcheck
 # detection (+110 .data, +88 .bss). Buying back lost URCs with RAM is the
 # whole point of having freed it; both figures are still far below the 2982 /
 # 4027 this started at.
-RAM_DATA_MAX ?= 1138
-RAM_BSS_MAX ?= 3622
+#
+# .bss raised from 3622 to 3714 (+92) for the asynchronous AT engine in
+# lara.cpp: a 64-byte line assembly buffer that has to survive between
+# service calls, plus its state and the +CLCC row accumulator. The blocking
+# reader held the equivalent on the stack for the duration of one call, so
+# this converts transient stack into permanent .bss rather than adding a new
+# peak. It comes out of the free pool, which is 3346 bytes after the change.
+#
+# .data ratcheted 1138 -> 1132 with the blocking +CSQ and +CLCC pollers, which
+# the async engine replaced and left with no callers.
+RAM_DATA_MAX ?= 1132
+RAM_BSS_MAX ?= 3714
 
 # Explicit build path so memcheck can find the ELF without guessing at the
 # arduino-cli sketch cache hash.
