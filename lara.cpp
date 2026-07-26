@@ -516,7 +516,21 @@ lara_activity lara_status()
  * Parse +CLCC <stat> (3rd CSV field). Mirrors call_phase.parse_clcc_stat.
  * Returns -1 if the line is not a usable +CLCC row.
  */
-static int parse_clcc_stat_line(const char *line)
+/*
+ * Parse one "+CLCC: <id>,<dir>,<stat>,..." entry.
+ *
+ * Direction is captured, not skipped. <stat> alone cannot tell an incoming
+ * call from an outgoing one — state 0 is an established call either way — so
+ * reading only the state left the firmware unable to recognise a call it had
+ * not placed, and the bell never flashed for it.
+ *
+ * Returns false for anything incomplete. Truncated lines are an observed
+ * condition on this UART, and a fragment accepted as a call would either
+ * invent an incoming call or mask a real one.
+ *
+ * Mirrors parse_clcc_line() in tools/pulse_monitor/clcc.py.
+ */
+static bool parse_clcc_line(const char *line, int *dir_out, int *stat_out)
 {
 	while (*line == ' ' || *line == '\t')
 		line++;
@@ -527,28 +541,42 @@ static int parse_clcc_stat_line(const char *line)
 		if (a >= 'a' && a <= 'z')
 			a = (char)(a - 'a' + 'A');
 		if (a != b)
-			return -1;
+			return false;
 	}
 	const char *p = line + strlen(prefix);
+
+	/* id */
 	while (*p == ' ' || *p == '\t')
 		p++;
-	/* id */
 	while (*p && *p != ',')
 		p++;
 	if (*p != ',')
-		return -1;
+		return false;
 	p++;
+
 	/* dir */
-	while (*p && *p != ',')
-		p++;
-	if (*p != ',')
-		return -1;
-	p++;
 	while (*p == ' ' || *p == '\t')
 		p++;
 	if (*p < '0' || *p > '9')
-		return -1;
-	return *p - '0';
+		return false;
+	int dir = *p - '0';
+	while (*p && *p != ',')
+		p++;
+	if (*p != ',')
+		return false;
+	p++;
+
+	/* stat */
+	while (*p == ' ' || *p == '\t')
+		p++;
+	if (*p < '0' || *p > '9')
+		return false;
+
+	if (dir_out)
+		*dir_out = dir;
+	if (stat_out)
+		*stat_out = *p - '0';
+	return true;
 }
 
 
@@ -573,12 +601,14 @@ static int prefer_clcc_stat(const int *stats, unsigned n)
  * itself instead of using lara_at()'s single-line capture. It still reads
  * through the final result code, which is what keeps the stream in sync.
  */
-int lara_clcc_stat(void)
+int lara_clcc_stat(bool *incoming_out)
 {
 	char line[LARA_LINE_LEN];
 	int stats[6];
 	unsigned nstats = 0;
 
+	if (incoming_out != nullptr)
+		*incoming_out = false;
 	if (!lara.s)
 		return -1;
 
@@ -595,9 +625,16 @@ int lara_clcc_stat(void)
 			return prefer_clcc_stat(stats, nstats);
 		if (fin == LARA_FINAL_ERROR)
 			return -1;
-		int st = parse_clcc_stat_line(line);
-		if (st >= 0
-		    && nstats < (unsigned)(sizeof(stats) / sizeof(stats[0])))
+		int dir = 0;
+		int st = 0;
+		if (!parse_clcc_line(line, &dir, &st))
+			continue;
+		if (incoming_out != nullptr
+		    && dir == LARA_CLCC_DIR_INCOMING
+		    && (st == LARA_CLCC_STATE_INCOMING
+		        || st == LARA_CLCC_STATE_WAITING))
+			*incoming_out = true;
+		if (nstats < (unsigned)(sizeof(stats) / sizeof(stats[0])))
 			stats[nstats++] = st;
 	}
 	return -1;

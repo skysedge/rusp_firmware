@@ -182,6 +182,26 @@ class IncomingRingEvidenceTests(unittest.TestCase):
 		)
 
 
+	def test_call_waiting_counts_as_incoming_ring_evidence(self):
+		# Why: with a call already up, a second incoming call is announced
+		# as +UCALLSTAT: 1,5 (waiting) and never as 1,4 or a RING URC. A
+		# live capture showed exactly this when the user called back during
+		# a still-active outbound call.
+		# Failure: returns False, so `ringing` is never set and the bell
+		# and filament LEDs do not flash for the returning call.
+		self.assertTrue(
+			is_incoming_ring_evidence(ucall_stat=5, saw_ring_urc=False)
+		)
+
+	def test_outgoing_alerting_is_not_ring_evidence(self):
+		# Why: state 3 is the remote phone ringing during our own outgoing
+		# call. Pairs with the case above to pin which states alert us.
+		# Failure: the phone rings at itself while placing a call.
+		self.assertFalse(
+			is_incoming_ring_evidence(ucall_stat=3, saw_ring_urc=False)
+		)
+
+
 class RingEvidenceExpiryTests(unittest.TestCase):
 	"""When silence means the caller is gone.
 

@@ -1546,12 +1546,18 @@ void loop()
 			ui_set_status("Ringing");
 			break;
 		case 4: /* MT ringing */
+		case 5: /* MT waiting — incoming while another call is up */
 			ringing = true;
 			/*
 			 * Counts as ring liveness. Some networks announce an
 			 * incoming call with this and never send a bare RING;
 			 * without stamping here the expiry check below has no
 			 * baseline and can never end the ring.
+			 *
+			 * State 5 is the call-waiting case and is the only
+			 * announcement a return call gets while an earlier call
+			 * is still active — no RING, no 1,4. Omitting it left
+			 * the phone silent for exactly that sequence.
 			 */
 			last_ring_evidence_ms = t;
 			ui_set_status("Incoming");
@@ -1590,17 +1596,34 @@ void loop()
 	if ((outbound_call_active || ringing)
 	    && (t - last_call_cpas_poll_ms >= CALL_CPAS_POLL_MS)) {
 		last_call_cpas_poll_ms = t;
-		int clcc = lara_clcc_stat();
+		bool clcc_incoming = false;
+		int clcc = lara_clcc_stat(&clcc_incoming);
 		if (clcc >= 0)
 			clcc_absent_polls = 0;
 		else if (clcc_absent_polls < CLCC_ABSENT_LIMIT)
 			clcc_absent_polls++;
 		call_logf(
-			"t=%lu CLCC %d absent=%u",
+			"t=%lu CLCC %d absent=%u incoming=%u",
 			(unsigned long)millis(), clcc,
-			(unsigned)clcc_absent_polls
+			(unsigned)clcc_absent_polls,
+			(unsigned)clcc_incoming
 		);
-		if (clcc == 0) {
+		if (clcc_incoming) {
+			/*
+			 * Checked before the state branches below, not after.
+			 * When a call is already up the preferred state is 0
+			 * (active), which falls into the "In call" branch and
+			 * clears `ringing` — silencing the bell for a second
+			 * call that is still waiting to be answered. That is
+			 * what kept a return call from alerting at all.
+			 */
+			ringing = true;
+			last_ring_evidence_ms = t;
+			if (!incoming_ui_shown) {
+				ui_set_status("Incoming");
+				incoming_ui_shown = true;
+			}
+		} else if (clcc == 0) {
 			saw_in_call_cpas = true;
 			ringing = false;
 			incoming_ui_shown = false;

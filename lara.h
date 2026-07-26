@@ -73,7 +73,20 @@ lara_activity lara_status();
  * 3 alerting, 4 incoming, …), or -1 if no calls / error.
  * Used to detect answered calls when +UCALLSTAT was swallowed by an AT wait.
  */
-int lara_clcc_stat(void);
+/* 3GPP 27.007 +CLCC <dir> and <stat> values used to spot an incoming call. */
+#define LARA_CLCC_DIR_INCOMING 1
+#define LARA_CLCC_STATE_INCOMING 4
+#define LARA_CLCC_STATE_WAITING 5
+
+/*
+ * Poll the call list. Returns the preferred <stat>, or -1 on failure.
+ *
+ * incoming_out (may be NULL) is set when any entry is a mobile-terminated
+ * call that is alerting — state 4, or state 5 when another call is already
+ * up. Call waiting is the only announcement a return call gets while an
+ * earlier call is still active.
+ */
+int lara_clcc_stat(bool *incoming_out);
 
 // answer an incoming call
 int lara_answer();

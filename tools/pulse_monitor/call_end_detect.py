@@ -12,7 +12,7 @@ no RING URC at all, so anything that keys off RING alone cannot answer it.
 
 from __future__ import annotations
 
-from call_phase import UCALL_RINGING_MT
+from call_phase import UCALL_RINGING_MT, UCALL_WAITING
 
 # Consecutive AT+CLCC polls reporting no calls before a session is declared
 # over. At the 1 Hz poll rate this is ~3 s of grace, enough to cover the gap
@@ -83,10 +83,15 @@ def is_incoming_ring_evidence(
 	with it and never send a bare RING. Keying liveness off RING alone left
 	the timestamp unset for the entire call, which disabled the expiry
 	check that is guarded on it.
+
+	1,5 (waiting) counts for the same reason one step further out: when a
+	call is already up, a second incoming call is announced only as waiting
+	— no RING, no 1,4. A capture of a return call during a still-active
+	outbound call showed the phone stayed silent because of it.
 	"""
 	if saw_ring_urc:
 		return True
-	return ucall_stat == UCALL_RINGING_MT
+	return ucall_stat in (UCALL_RINGING_MT, UCALL_WAITING)
 
 
 def ring_evidence_expired(

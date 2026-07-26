@@ -34,11 +34,30 @@ MEMCHECK_DIR := tools/memcheck
 #           that are not in PROGMEM, which is what makes it worth attacking.
 #   .bss  — zeroed globals. Dominated by eink_buffer, the SD library and
 #           dial_dbg_q.
-RAM_DATA_MAX ?= 1028
-RAM_BSS_MAX ?= 3150
+# Raised deliberately from 1028 / 3150 to take the 256-byte modem receive
+# buffer (+384 in .bss across the two live serials) and the call-waiting
+# detection (+110 .data, +88 .bss). Buying back lost URCs with RAM is the
+# whole point of having freed it; both figures are still far below the 2982 /
+# 4027 this started at.
+RAM_DATA_MAX ?= 1138
+RAM_BSS_MAX ?= 3622
 
 # Explicit build path so memcheck can find the ELF without guessing at the
 # arduino-cli sketch cache hash.
+# Modem UART receive buffer.
+#
+# The core default is 64 bytes, about 5.5 ms of data at 115200 baud, while the
+# main loop still blocks for roughly 155 ms on ui_refresh() issuing AT+CSQ.
+# Any URC arriving in that window is lost once the buffer fills, which was
+# observed as URCs truncated to a bare "+U" or "1,0" — and a lost
+# +UCALLSTAT: 1,6 leaves a finished call marked active forever, because
+# unsolicited output is never retransmitted.
+#
+# 256 bytes covers the measured worst-case loop latency with margin. This is
+# what the RAM freed by the PROGMEM work bought.
+SERIAL_RX_BUFFER_SIZE ?= 256
+EXTRA_CPP_FLAGS ?= -DSERIAL_RX_BUFFER_SIZE=${SERIAL_RX_BUFFER_SIZE}
+
 BUILD_DIR ?= build
 ARDUINO_DATA_DIRS := ${HOME}/.arduino15 ${HOME}/Library/Arduino15
 AVR_SIZE ?= $(firstword $(wildcard $(foreach d,${ARDUINO_DATA_DIRS},\
@@ -48,7 +67,8 @@ AVR_SIZE ?= $(firstword $(wildcard $(foreach d,${ARDUINO_DATA_DIRS},\
 default: compile usb
 
 compile:
-	"${ARDUINO_CLI}" compile -b ${BOARD} --board-options ${BOARD_OPTS}
+	"${ARDUINO_CLI}" compile -b ${BOARD} --board-options ${BOARD_OPTS} \
+		--build-property compiler.cpp.extra_flags="${EXTRA_CPP_FLAGS}"
 
 usb:
 	"${ARDUINO_CLI}" upload -b ${BOARD} -p $(PORT) -vt \
@@ -77,6 +97,7 @@ test: pulse-monitor-test memcheck-test
 # Compile to a known path and fail if the firmware exceeds the RAM budget.
 memcheck:
 	"${ARDUINO_CLI}" compile -b ${BOARD} --board-options ${BOARD_OPTS} \
+		--build-property compiler.cpp.extra_flags="${EXTRA_CPP_FLAGS}" \
 		--build-path ${BUILD_DIR}
 	python3 ${MEMCHECK_DIR}/memcheck.py ${BUILD_DIR}/rusp_firmware.ino.elf \
 		--avr-size "${AVR_SIZE}" \
