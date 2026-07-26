@@ -76,13 +76,21 @@ AVR_SIZE ?= $(firstword $(wildcard $(foreach d,${ARDUINO_DATA_DIRS},\
 
 default: compile usb
 
+# --build-path is not optional here. Without it arduino-cli builds into its
+# own cache while memcheck builds into BUILD_DIR, so the two disagree and
+# `usb` flashes whichever binary the cache happens to hold. That silently put
+# a hours-old image on the board while every local check passed.
 compile:
 	"${ARDUINO_CLI}" compile -b ${BOARD} --board-options ${BOARD_OPTS} \
-		--build-property compiler.cpp.extra_flags="${EXTRA_CPP_FLAGS}"
+		--build-property compiler.cpp.extra_flags="${EXTRA_CPP_FLAGS}" \
+		--build-path ${BUILD_DIR}
 
-usb:
+# Depends on compile, and flashes that exact output. Uploading without
+# --input-dir takes whatever is in arduino-cli's cache, which is not
+# necessarily what was just built.
+usb: compile
 	"${ARDUINO_CLI}" upload -b ${BOARD} -p $(PORT) -vt \
-		--board-options ${BOARD_OPTS}
+		--board-options ${BOARD_OPTS} --input-dir ${BUILD_DIR}
 
 pulse-debug-compile:
 	"${ARDUINO_CLI}" compile -b ${PULSE_DEBUG_BOARD} \
