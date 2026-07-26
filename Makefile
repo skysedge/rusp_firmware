@@ -127,6 +127,29 @@ pulse-monitor:
 			python3 pulse_monitor.py --port $(PORT) --baud ${PULSE_MONITOR_BAUD}; \
 		fi
 
+# Raw console capture for hardware debugging, as opposed to pulse-monitor,
+# which parses dial pulses. Runs until interrupted; pass SECONDS=n to bound it.
+#
+# Redirect to a file and leave it in the foreground. Backgrounding this with
+# nohup from a short-lived shell gets the process torn down when that shell
+# exits, which produces a log that stops seconds after boot and looks
+# indistinguishable from an idle device.
+# CAPTURE_PORT is deliberately not PORT: PORT defaults to a Linux device node,
+# and pinning capture to a device that does not exist on this host makes it
+# wait for a board that will never appear. Left empty, console_capture finds
+# whichever port is present on either platform.
+CAPTURE_PORT ?=
+CAPTURE_ARGS ?= $(if $(CAPTURE_PORT),--port $(CAPTURE_PORT),) \
+		$(if $(SECONDS),--seconds $(SECONDS),)
+
+capture:
+	cd ${PULSE_MONITOR_DIR} && \
+		if [ -x .venv/bin/python ]; then \
+			.venv/bin/python console_capture.py ${CAPTURE_ARGS}; \
+		else \
+			python3 console_capture.py ${CAPTURE_ARGS}; \
+		fi
+
 program:
 	arduino-cli upload -b ${BOARD} -P avrispmkii -vt \
 		--board-options ${BOARD_OPTS}
