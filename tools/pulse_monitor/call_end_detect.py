@@ -116,3 +116,38 @@ def ring_evidence_expired(
 	if now_ms < last_evidence_ms:
 		return False
 	return now_ms - last_evidence_ms > timeout_ms
+
+
+class CallSession:
+	"""Tracks whether a call session is up, so exactly one path reports it
+	ending.
+
+	The modem emits its own disconnect URC shortly after a locally
+	initiated hangup or reject has already torn the session down. Both
+	arms call end(), so without this the URC arm repaints a generic
+	"Call ended" over the specific outcome the user caused: pressing C on
+	a ringing call showed "Call ended" instead of "Rejected".
+
+	end() returns True only for the call that actually ended an active
+	session. Callers use that to decide whether to touch the status line,
+	which makes the first ending win rather than the last.
+
+	Mirrors call_session_begin / call_session_end in rusp_firmware.ino.
+	"""
+
+	def __init__(self) -> None:
+		self._active = False
+
+	def begin(self) -> None:
+		self._active = True
+
+	def end(self) -> bool:
+		"""True when this call ended an active session, False if the
+		session was already down (a duplicate teardown)."""
+		was_active = self._active
+		self._active = False
+		return was_active
+
+	@property
+	def active(self) -> bool:
+		return self._active

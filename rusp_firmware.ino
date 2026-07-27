@@ -234,6 +234,8 @@ char ui_status[24] = "Ready";
 volatile bool ui_dirty = false;
 /* C button: handled in loop so display-asleep presses can wake without delete. */
 volatile bool clear_request = false;
+/* True between call_session_begin and call_session_end. See call_session_end. */
+static bool call_session_up = false;
 bool incoming_ui_shown = false;
 unsigned long last_ui_meter_ms = 0;
 /* Last drawn chrome — skip full clear/redraw when nothing changed (anti-flicker). */
@@ -324,8 +326,23 @@ static void call_logf_P(const char *fmt, ...)
  * those fields: its reply describes this session, so it must not survive
  * into the next one.
  */
-static void call_session_end(const char *reason)
+/*
+ * Tear the session down. Returns true only when a session was actually up.
+ *
+ * The modem sends its own disconnect URC roughly 100 ms after a locally
+ * initiated hangup or reject has already ended the call, and that arm calls
+ * this too. Callers gate their status update on the return value so the first
+ * ending owns the status line: without it the URC repainted a generic
+ * "Call ended" over the specific outcome, and pressing C on a ringing call
+ * showed "Call ended" instead of "Rejected".
+ *
+ * Mirrors CallSession in tools/pulse_monitor/call_end_detect.py.
+ */
+static bool call_session_end(const char *reason)
 {
+	const bool was_active =
+		(call_session_up || outbound_call_active || ringing);
+	call_session_up = false;
 	lara_clcc_poll_cancel();
 	outbound_call_active = false;
 	saw_in_call_cpas = false;
@@ -337,6 +354,7 @@ static void call_session_end(const char *reason)
 		"t=%lu CALL_SESSION_END %s",
 		(unsigned long)millis(), reason ? reason : "?"
 	);
+	return was_active;
 }
 
 
@@ -351,6 +369,7 @@ static void call_session_begin(const char *reason)
 	saw_in_call_cpas = false;
 	ringing = false;
 	incoming_ui_shown = false;
+	call_session_up = true;
 	clcc_absent_polls = 0;
 	last_ring_evidence_ms = 0;
 	last_call_cpas_poll_ms = millis();
@@ -415,6 +434,8 @@ static void ui_signal_service(unsigned long now_ms)
 
 static void ui_wake(void);
 static void ui_note_activity(void);
+static void ui_set_status_P(const char *status);
+#define ui_set_status(status) ui_set_status_P(PSTR(status))
 
 /**
  * Redraw post-boot UI (signal left, battery right, bottom message/number).
@@ -422,6 +443,26 @@ static void ui_note_activity(void);
  * caused visible flicker on the periodic battery timer.
  * While the panel is asleep, skip SPI draws (wake forces a full refresh).
  */
+/* Bottom line while a caller owns it but the network gave us no number. */
+static const char CALLER_ID_UNKNOWN[] = "Unknown";
+
+/*
+ * True while an incoming call's identity owns the bottom line.
+ *
+ * Deliberately outlives the call: "Rejected" and "Call ended" mean little
+ * without the number they refer to, so only something that needs the bottom
+ * line for itself takes it back. See caller_line_release().
+ *
+ * Mirrors caller_line_after() in tools/pulse_monitor/caller_id.py.
+ */
+static bool caller_line_active = false;
+
+/* Hand the bottom line back to the dial buffer. */
+static void caller_line_release(void)
+{
+	caller_line_active = false;
+}
+
 static void ui_refresh(void)
 {
 	if (!display_awake)
@@ -431,13 +472,36 @@ static void ui_refresh(void)
 	int pct = battery_percent_cached(now, BATT_UI_REFRESH_MS);
 	bool charging = battery_is_charging();
 	int bars = ui_signal_bars_cached;
-	const char *raw =
-		(dial_idx > 0 && dial_buf[0] != '\0') ? dial_buf : "";
-	char formatted[40];
-	if (raw[0] != '\0')
-		format_phone_display(raw, formatted, sizeof(formatted));
+	/*
+	 * An incoming call owns the bottom line. The dial buffer is only
+	 * hidden, not discarded, and returns once the call clears -- whereas
+	 * the caller's number is knowable only while the phone is ringing.
+	 *
+	 * A withheld caller has no number to format, so it takes the label
+	 * path instead: running the word through format_phone_display() would
+	 * rearrange it into punctuation.
+	 *
+	 * Mirrors bottom_line_number/bottom_line_label in
+	 * tools/pulse_monitor/caller_id.py.
+	 */
+	const char *caller = caller_line_active ? lara_caller_id() : "";
+	const bool caller_known = (caller[0] != '\0');
+	const bool raw_is_number = !caller_line_active || caller_known;
+	const char *raw;
+	if (caller_line_active)
+		raw = caller_known ? caller : CALLER_ID_UNKNOWN;
 	else
+		raw = (dial_idx > 0 && dial_buf[0] != '\0') ? dial_buf : "";
+
+	char formatted[40];
+	if (raw[0] == '\0') {
 		formatted[0] = '\0';
+	} else if (raw_is_number) {
+		format_phone_display(raw, formatted, sizeof(formatted));
+	} else {
+		strncpy(formatted, raw, sizeof(formatted) - 1);
+		formatted[sizeof(formatted) - 1] = '\0';
+	}
 
 	/*
 	 * Repaint per band, not per frame. Status text appears in both bands
@@ -485,6 +549,27 @@ static void ui_sleep(void)
 	if (!display_awake)
 		return;
 	display_awake = false;
+	/*
+	 * Blanking ends the episode, so the caller and the status describing
+	 * them go together. Left behind, the outcome outlives the number that
+	 * gave it meaning: waking after a rejected call read "Rejected" on
+	 * both lines — once as the status, and again because the bottom band
+	 * echoes the status when it has no number — for a call the user could
+	 * no longer identify or date.
+	 *
+	 * A live call is the exception — waking to "Ready" would say the user
+	 * had hung up when they had not. A call now holds the panel awake
+	 * outright, so the idle timer can no longer reach this case; the
+	 * branch stays because the hold and this choice are separate, and
+	 * dropping the hold would silently restore the wrong status.
+	 *
+	 * Ordered after display_awake so the status change cannot paint.
+	 *
+	 * Mirrors status_on_sleep() in tools/pulse_monitor/display_policy.py.
+	 */
+	caller_line_release();
+	if (!call_session_up)
+		ui_set_status("Ready");
 	oled_display_off();
 	call_logf("t=%lu OLED_SLEEP", (unsigned long)millis());
 }
@@ -527,7 +612,21 @@ static void ui_set_status_P(const char *status)
 	ui_refresh();
 }
 
-#define ui_set_status(status) ui_set_status_P(PSTR(status))
+
+/*
+ * Announce an incoming call.
+ *
+ * Claims the bottom line for the caller before the status paints, so the
+ * number lands in the same redraw. Setting the status first would paint the
+ * dial buffer underneath "Incoming" and need a second pass to correct it, and
+ * a redundant bottom-band redraw is what previously blocked the CPU long
+ * enough to overrun the modem UART receive buffer.
+ */
+static void ui_show_incoming(void)
+{
+	caller_line_active = true;
+	ui_set_status("Incoming");
+}
 
 /**
  * Enqueue a dial debug event. Interrupts must already be masked / in ISR.
@@ -1168,6 +1267,7 @@ void handle_completed_digit(char pulse_count, bool speed_dial_hook)
 			(unsigned long)millis(), dial_buf
 		);
 	}
+	caller_line_release();
 	dial_buf[dial_idx] = entered_digit;
 	dial_buf[++dial_idx] = 0;
 	/*
@@ -1421,7 +1521,32 @@ void loop()
 		interrupts();
 		const bool was_awake = display_awake;
 		ui_wake();
-		if (was_awake) {
+		if (ringing) {
+			/*
+			 * Reject the call. Checked before the was_awake gate
+			 * below because the panel sleeps while a call rings, so
+			 * gating on it would make rejecting take two presses --
+			 * the same defect that made answering take two. There is
+			 * also nothing worth deleting mid-ring, so this cannot
+			 * steal a press the user meant for the buffer.
+			 *
+			 * See tools/pulse_monitor/clear_action.py.
+			 */
+			call_logf(
+				"t=%lu CALL_REJECT cpas_ringing=1",
+				(unsigned long)millis()
+			);
+			int rc = lara_hangup();
+			call_session_end("C reject");
+			call_logf(
+				"t=%lu CALL_REJECT_DONE rc=%d",
+				(unsigned long)millis(), rc
+			);
+			if (rc == LARA_RC_OK)
+				ui_set_status("Rejected");
+			else
+				ui_set_status("Reject fail");
+		} else if (was_awake) {
 			if (!DISABLE_CALL_TYPE_MODES
 			    && prev_mode == CALL_MODE_LOCAL
 			    && dial_idx <= strlen(sd_PREPEND())) {
@@ -1433,6 +1558,7 @@ void loop()
 					dial_idx = 0;
 				dial_buf[dial_idx] = 0;
 			}
+			caller_line_release();
 			ui_have_last = false;
 			ui_refresh();
 			call_logf(
@@ -1494,8 +1620,30 @@ void loop()
 	 * Blank after OLED_IDLE_TIMEOUT_MS with no input, but keep the panel
 	 * awake while actively charging. (Full battery + cable still plugged
 	 * reports IDLE — CHRG only means charge cycle active.)
+	 *
+	 * An incoming call holds it awake too, and lights it if it was dark:
+	 * a call the user cannot see is a call missed. Stated explicitly
+	 * rather than left to the idle timer — rings land every ~5 s against
+	 * a 20 s timeout, so they would normally keep the panel lit by
+	 * counting as activity, but a ring lost to a throttled UART would let
+	 * it blank mid-call. ui_sleep() releases the caller line, so that
+	 * would take the caller's number off the bottom line with it.
+	 *
+	 * A connected call needs its own hold: the ringing one ends the
+	 * instant the call is answered, and a call in progress produces no
+	 * input, so the panel blanked ~20 s into every call regardless of
+	 * how it started.
+	 *
+	 * Mirrors display_action() in tools/pulse_monitor/display_policy.py.
 	 */
-	if (battery_is_charging()) {
+	if (battery_is_charging() || ringing || outbound_call_active) {
+		/*
+		 * Hold the idle timer as well as the panel. Left running, it
+		 * expires underneath a call longer than the timeout, and the
+		 * panel blanks in the same frame the call ends — taking the
+		 * outcome status and the caller's number with it.
+		 */
+		last_ui_activity_ms = t;
 		if (!display_awake)
 			ui_wake();
 	} else if (display_awake
@@ -1584,8 +1732,8 @@ void loop()
 	 * whereas a dropped one silently loses an incoming call.
 	 */
 	if (call_ended_urc) {
-		call_session_end("NO CARRIER or UCALLSTAT:6");
-		ui_set_status("Call ended");
+		if (call_session_end("NO CARRIER or UCALLSTAT:6"))
+			ui_set_status("Call ended");
 		if (rang_this_drain)
 			ringing = true;
 	}
@@ -1622,7 +1770,7 @@ void loop()
 			 * the phone silent for exactly that sequence.
 			 */
 			last_ring_evidence_ms = t;
-			ui_set_status("Incoming");
+			ui_show_incoming();
 			incoming_ui_shown = true;
 			break;
 		case 0: /* active */
@@ -1634,8 +1782,8 @@ void loop()
 			ui_set_status("In call");
 			break;
 		case 6: /* disconnected */
-			call_session_end("UCALLSTAT:6");
-			ui_set_status("Call ended");
+			if (call_session_end("UCALLSTAT:6"))
+				ui_set_status("Call ended");
 			break;
 		default:
 			break;
@@ -1708,7 +1856,7 @@ void loop()
 			ringing = true;
 			last_ring_evidence_ms = t;
 			if (!incoming_ui_shown) {
-				ui_set_status("Incoming");
+				ui_show_incoming();
 				incoming_ui_shown = true;
 			}
 		} else if (clcc == 0) {
@@ -1724,7 +1872,7 @@ void loop()
 			ringing = true;
 			last_ring_evidence_ms = t;
 			incoming_ui_shown = true;
-			ui_set_status("Incoming");
+			ui_show_incoming();
 		} else if (clcc_absent_polls >= CLCC_ABSENT_LIMIT) {
 			/*
 			 * CLCC says there is no call. This does not require the
@@ -1770,7 +1918,7 @@ void loop()
 
 	if (ringing) {
 		if (!incoming_ui_shown) {
-			ui_set_status("Incoming");
+			ui_show_incoming();
 			incoming_ui_shown = true;
 		}
 
@@ -1978,6 +2126,7 @@ void loop()
 					(unsigned long)millis(), rc
 				);
 				if (rc == LARA_RC_OK) {
+					caller_line_release();
 					call_session_begin("ATD");
 					ui_set_status("Dialing");
 				} else {

@@ -14,6 +14,7 @@ Failure modes when regressions occur:
 import unittest
 
 from call_end_detect import (
+	CallSession,
 	CLCC_ABSENT_LIMIT,
 	RING_EVIDENCE_TIMEOUT_MS,
 	RING_MAX_MS,
@@ -290,3 +291,45 @@ class RingEvidenceExpiryTests(unittest.TestCase):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class SessionEndOwnershipTests(unittest.TestCase):
+	"""Who gets to set the final status line when a call ends.
+
+	The modem sends its own disconnect URC ~100 ms after a locally
+	initiated hangup or reject completes. Both paths call session end, so
+	without an ownership rule the URC repaints a generic "Call ended" over
+	the specific outcome the user just caused -- observed as pressing C on
+	a ringing call showing "Call ended" instead of "Rejected".
+	"""
+
+	def test_end_reports_true_only_for_an_active_session(self):
+		# Why: the return value is what gates the status update.
+		# Failure: the URC arm believes it ended the call and overwrites.
+		session = CallSession()
+		session.begin()
+		self.assertTrue(session.end())
+
+	def test_second_end_reports_false(self):
+		# Why: this is the exact reject sequence -- local end, then the
+		# modem's disconnect URC ends it again a moment later.
+		# Failure: True, and "Rejected" is replaced by "Call ended".
+		session = CallSession()
+		session.begin()
+		session.end()
+		self.assertFalse(session.end())
+
+	def test_end_without_begin_reports_false(self):
+		# Why: an incoming call that is rejected while ringing never began
+		# a session, so nothing should announce a call ending.
+		# Failure: "Call ended" appears for a call that never connected.
+		self.assertFalse(CallSession().end())
+
+	def test_begin_after_end_reports_true_again(self):
+		# Why: the next call must not inherit the previous teardown.
+		# Failure: a genuine remote hangup goes unreported.
+		session = CallSession()
+		session.begin()
+		session.end()
+		session.begin()
+		self.assertTrue(session.end())

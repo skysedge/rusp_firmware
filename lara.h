@@ -68,6 +68,26 @@ void lara_unsolicited(
 // check if in a call, etc.
 lara_activity lara_status();
 
+/* E.164 allows 15 digits; the '+' of an international number makes 16. */
+#define LARA_CALLER_ID_MAX_LEN 16
+
+/*
+ * The number of the call now ringing, or "" when the network gave none.
+ *
+ * Held here rather than returned through lara_unsolicited() because that
+ * function already carries four out-parameters, and because the number is a
+ * property of the current call rather than of one drain of the URC stream.
+ *
+ * Scoped to the call by the RING handler, which drops the stored number so
+ * that the +CLIP arriving in the same burst can put it back. A withheld caller
+ * sends no +CLIP, and would otherwise inherit the previous caller's number.
+ *
+ * It deliberately survives the call ending, because "Rejected" and "Call
+ * ended" mean little without the number they refer to. What may still be shown
+ * is decided by the caller line in rusp_firmware.ino, not here.
+ */
+const char *lara_caller_id(void);
+
 /* 3GPP 27.007 +CLCC <dir> and <stat> values used to spot an incoming call. */
 #define LARA_CLCC_DIR_INCOMING 1
 #define LARA_CLCC_STATE_INCOMING 4

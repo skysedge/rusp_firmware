@@ -44,7 +44,10 @@ def should_wait_for_pacsp(pwr_det_high: bool, at_responds: bool = False) -> bool
 BOOT_MANDATORY = ("&K0", "+CMEE=2", "+UCALLSTAT=1")
 
 # Nice to have; the phone still places and receives calls without them.
-BOOT_ADVISORY = ("+CLVL=6", "+UEXTDCONF=0,1")
+# +CLIP=1 is here rather than in BOOT_MANDATORY because caller identification
+# is a subscription service: a SIM or network that withholds it must not make
+# the phone declare itself unfit to boot, since calls place and receive fine.
+BOOT_ADVISORY = ("+CLIP=1", "+CLVL=6", "+UEXTDCONF=0,1")
 
 
 def boot_config_sequence() -> list[str]:
@@ -61,3 +64,55 @@ def boot_config_sequence() -> list[str]:
 def boot_command_is_mandatory(command: str) -> bool:
 	"""Should lara_on() report failure when this command is refused?"""
 	return command in BOOT_MANDATORY
+
+
+# Carrier profile the module should be provisioned with.
+#
+# LARA-R6 firmware 02.14 offers only 1 (SIM ICCID select), 90 (Global) and
+# 201 (GCF-PTCRB certification). Global applies no operator-specific IMS
+# configuration, and a unit left on it was seen to register IMS and receive
+# VoLTE calls normally while every outgoing call rang the far end and never
+# completed the answer back -- the module held it in "dialing" until the
+# network timed it out, so it never opened the audio path. 1 takes the
+# operator's configuration from the SIM, which is what Global lacks.
+MNO_PROFILE_DESIRED = 1
+
+_MNO_PREFIX = "+UMNOPROF:"
+
+
+def parse_mno_profile(line: str) -> int | None:
+	"""The profile number from a +UMNOPROF query, or None if unreadable."""
+	if not line or not line.startswith(_MNO_PREFIX):
+		return None
+	value = line[len(_MNO_PREFIX):].strip()
+	if not value.isdigit():
+		return None
+	return int(value)
+
+
+def mno_profile_change_needed(current: int | None) -> bool:
+	"""Whether the module needs reprovisioning to the desired profile.
+
+	An unreadable current value is deliberately treated as "leave alone".
+	Writing the profile reboots the module, so acting on an unknown value
+	risks rebooting, failing the query again, and rebooting forever --
+	a phone that never finishes starting up. A modem that cannot answer
+	the query has a larger problem than its carrier profile.
+	"""
+	if current is None:
+		return False
+	return current != MNO_PROFILE_DESIRED
+
+
+def mno_profile_commands(profile: int) -> list[str]:
+	"""The ordered sequence that provisions `profile`.
+
+	Order is the behaviour, not presentation. The module refuses the write
+	while attached to a network, and the new profile only takes effect
+	after a reboot. Skipping either step leaves the setting unapplied
+	while appearing to have succeeded.
+
+	The reboot discards the session configuration applied before it, so
+	the caller must run boot_config_sequence() again afterwards.
+	"""
+	return ["+COPS=2", f"+UMNOPROF={profile}", "+CFUN=15"]

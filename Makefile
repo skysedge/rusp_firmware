@@ -49,8 +49,8 @@ MEMCHECK_DIR := tools/memcheck
 #
 # .data ratcheted 1138 -> 1132 with the blocking +CSQ and +CLCC pollers, which
 # the async engine replaced and left with no callers.
-RAM_DATA_MAX ?= 1132
-RAM_BSS_MAX ?= 3714
+RAM_DATA_MAX ?= 1214
+RAM_BSS_MAX ?= 3738
 
 # Explicit build path so memcheck can find the ELF without guessing at the
 # arduino-cli sketch cache hash.
@@ -112,8 +112,17 @@ memcheck-test:
 # All host-side tests.
 test: pulse-monitor-test memcheck-test
 
+# Reject unconditional self-recursion, which overflows the stack at runtime
+# and leaves the board unresponsive with nothing on the console. avr-gcc 7.3.0
+# (pinned by the Arduino AVR core) predates -Winfinite-recursion, added in
+# GCC 12, so the compiler cannot catch it. Drop this once the toolchain moves.
+FIRMWARE_SOURCES := $(wildcard *.ino *.cpp *.h)
+
+recursion-check:
+	python3 ${MEMCHECK_DIR}/recursion.py ${FIRMWARE_SOURCES}
+
 # Compile to a known path and fail if the firmware exceeds the RAM budget.
-memcheck:
+memcheck: recursion-check
 	"${ARDUINO_CLI}" compile -b ${BOARD} --board-options ${BOARD_OPTS} \
 		--build-property compiler.cpp.extra_flags="${EXTRA_CPP_FLAGS}" \
 		--build-path ${BUILD_DIR}

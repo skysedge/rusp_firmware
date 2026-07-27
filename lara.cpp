@@ -413,6 +413,12 @@ static int lara_at(
 }
 
 
+static int lara_apply_boot_config(void);
+static bool lara_mno_profile_needs_change(void);
+static int lara_set_mno_profile(void);
+#define STRINGIFY_(x) #x
+#define STRINGIFY(x) STRINGIFY_(x)
+
 /* As lara_at(), for the call commands where NO CARRIER / BUSY are results. */
 static int lara_at_call(const char *command, unsigned long timeout_ms)
 {
@@ -541,6 +547,36 @@ int lara_on(
 		return -1;
 	}
 
+	int rc = lara_apply_boot_config();
+
+	/*
+	 * Provision the carrier profile, then re-apply the configuration the
+	 * reboot discarded. Checked after the config above because the query
+	 * needs &K0 already applied — a throttled UART truncates the reply,
+	 * and an unreadable profile is deliberately left alone.
+	 */
+	if (lara_mno_profile_needs_change()) {
+		if (lara_set_mno_profile() == 0)
+			rc = lara_apply_boot_config();
+		else
+			rc = -1;
+	}
+
+	lara.cons->println(
+		rc == 0 ? F("LARA: ready") : F("LARA: config incomplete")
+	);
+	return rc;
+}
+
+
+/*
+ * Apply the session configuration. Re-runnable, because a carrier profile
+ * change reboots the module and takes all of this with it.
+ *
+ * Mirrors boot_config_sequence() in tools/pulse_monitor/modem_boot.py.
+ */
+static int lara_apply_boot_config(void)
+{
 	/* Echo off — responses carry only what the modem has to say. */
 	lara_at_set("E0", LARA_AT_TIMEOUT_MS);
 
@@ -568,15 +604,102 @@ int lara_on(
 	if (lara_at_set("+UCALLSTAT=1", LARA_AT_TIMEOUT_MS) != 0)
 		rc = -1;
 
-	/* Advisory: audio tuning, not required to place or receive a call. */
+	/*
+	 * Advisory: none of these is required to place or receive a call.
+	 * +CLIP=1 asks the network to identify callers. It is a subscription
+	 * service, so a SIM or network that withholds it must not fail boot.
+	 */
+	lara_at_set("+CLIP=1", LARA_AT_TIMEOUT_MS);
 	lara_at_set("+CLVL=6", LARA_AT_TIMEOUT_MS);
 	/* Takes effect on the module's next power-up, not this one. */
 	lara_at_set("+UEXTDCONF=0,1", LARA_AT_TIMEOUT_MS);
 
-	lara.cons->println(
-		rc == 0 ? F("LARA: ready") : F("LARA: config incomplete")
-	);
 	return rc;
+}
+
+
+/*
+ * Carrier profile the module should be provisioned with.
+ *
+ * LARA-R6 firmware 02.14 offers only 1 (SIM ICCID select), 90 (Global) and
+ * 201 (GCF-PTCRB certification). Global applies no operator-specific IMS
+ * configuration, and a unit left on it was seen to register IMS and receive
+ * VoLTE calls normally while every outgoing call rang the far end and never
+ * completed the answer back — the module held it in "dialing" until the
+ * network timed it out, so it never opened the audio path. 1 takes the
+ * operator's configuration from the SIM, which is what Global lacks.
+ *
+ * The value lives in the module's non-volatile memory and survives power
+ * cycles, so this is provisioning rather than configuration: read it, and
+ * write only when wrong. Writing unconditionally would reboot the modem on
+ * every startup, dropping registration to rewrite a correct value.
+ *
+ * Mirrors the MNO profile helpers in tools/pulse_monitor/modem_boot.py.
+ */
+#define LARA_MNO_PROFILE_DESIRED 1
+
+/* A module reboot takes far longer than any ordinary command. */
+#define LARA_REBOOT_TIMEOUT_MS 40000UL
+
+static bool lara_mno_profile_needs_change(void)
+{
+	char resp[24];
+
+	if (lara_at(
+		"+UMNOPROF?", "+UMNOPROF:", resp, sizeof(resp),
+		LARA_AT_TIMEOUT_MS
+	) != 0)
+		return false;
+
+	const char *value = resp + strlen("+UMNOPROF:");
+	while (*value == ' ' || *value == '\t')
+		value++;
+	if (*value < '0' || *value > '9')
+		return false;
+
+	/*
+	 * An unreadable profile is left alone on purpose. Writing reboots the
+	 * module, so acting on a value we could not read risks rebooting,
+	 * failing the query again and rebooting forever — a phone that never
+	 * finishes starting up. A modem that cannot answer this has a larger
+	 * problem than its carrier profile.
+	 */
+	int current = atoi(value);
+	if (current == LARA_MNO_PROFILE_DESIRED)
+		return false;
+
+	lara.cons->print(F("LARA: MNO profile "));
+	lara.cons->print(current);
+	lara.cons->println(F(" — reprovisioning"));
+	return true;
+}
+
+
+/*
+ * Write the profile and reboot the module so it takes effect.
+ *
+ * The module refuses the write while attached to a network, hence the
+ * deregister first. Returns 0 once the module answers AT again.
+ */
+static int lara_set_mno_profile(void)
+{
+	lara_at_set("+COPS=2", LARA_AT_TIMEOUT_MS);
+	if (lara_at_set("+UMNOPROF=" STRINGIFY(LARA_MNO_PROFILE_DESIRED),
+	                LARA_AT_TIMEOUT_MS) != 0) {
+		lara.cons->println(F("LARA: MNO profile write refused"));
+		return -1;
+	}
+	lara_at_set("+CFUN=15", LARA_AT_TIMEOUT_MS);
+
+	lara.cons->println(F("LARA: module rebooting for MNO profile"));
+	unsigned long deadline = millis() + LARA_REBOOT_TIMEOUT_MS;
+	while (millis() < deadline) {
+		delay(500);
+		if (lara_at_set("", 400) == 0)
+			return 0;
+	}
+	lara.cons->println(F("LARA: module did not return after reboot"));
+	return -1;
 }
 
 
@@ -620,6 +743,67 @@ static int parse_ucallstat_stat(const char *payload)
 }
 
 
+/* Empty when the network gave no number for the call now ringing. */
+static char lara_clip_number[LARA_CALLER_ID_MAX_LEN + 1] = "";
+
+/* The only characters a dialable number can contain. */
+static bool lara_is_dialable(char c)
+{
+	return (c >= '0' && c <= '9') || c == '+' || c == '*' || c == '#';
+}
+
+/**
+ * Parse the calling number from the text after '+CLIP:'.
+ *
+ * Writes lara_clip_number and returns true only for a number that could
+ * plausibly be one. A withheld caller sends empty quotes, and a damaged line
+ * may end before the closing quote or carry arbitrary bytes inside it; both
+ * leave the stored number empty.
+ *
+ * Damage is not hypothetical. Hardware flow control left enabled once let the
+ * module gate its own transmitter mid-message and URCs arrived as a lone "R".
+ * Unsolicited output is never retransmitted, so a mangled +CLIP cannot be
+ * re-requested. Truncating an overlong number to fit would put a different,
+ * real-looking number on the panel, which is worse than showing none because
+ * the user cannot tell that it is wrong.
+ *
+ * Mirrors tools/pulse_monitor/caller_id.py parse_clip_payload().
+ */
+static bool parse_clip_number(const char *payload)
+{
+	lara_clip_number[0] = '\0';
+
+	while (*payload == ' ' || *payload == '\t')
+		payload++;
+	if (*payload != '"')
+		return false;
+	payload++;
+
+	uint8_t len = 0;
+	while (payload[len] != '"') {
+		if (payload[len] == '\0')
+			return false;
+		if (!lara_is_dialable(payload[len]))
+			return false;
+		if (len >= LARA_CALLER_ID_MAX_LEN)
+			return false;
+		len++;
+	}
+	if (len == 0)
+		return false;
+
+	memcpy(lara_clip_number, payload, len);
+	lara_clip_number[len] = '\0';
+	return true;
+}
+
+
+const char *lara_caller_id(void)
+{
+	return lara_clip_number;
+}
+
+
 /* Feed one modem byte into URC matchers; stash results in module pending. */
 static void lara_urc_on_byte(char c)
 {
@@ -628,25 +812,38 @@ static void lara_urc_on_byte(char c)
 	static const char *nocarr_r = "NO CARRIER\r";
 	static const char *nocarr_n = "NO CARRIER\n";
 	static const char *ucs_pat = "+UCALLSTAT:";
+	static const char *clip_pat = "+CLIP:";
 	static uint8_t ring_i = 0, ring_n_i = 0, noc_r_i = 0, noc_n_i = 0;
-	static uint8_t ucs_i = 0;
-	static bool ucs_capturing = false;
-	static char ucs_buf[24];
-	static uint8_t ucs_len = 0;
+	static uint8_t ucs_i = 0, clip_i = 0;
 
-	if (ucs_capturing) {
+	/*
+	 * Both captured URCs run from their prefix to end of line, and the
+	 * modem cannot interleave two lines on one wire, so a single buffer
+	 * serves both. cap_kind records whose payload is being collected.
+	 * The prefix itself is consumed by the matcher and never lands here.
+	 */
+	enum { CAP_NONE, CAP_UCALLSTAT, CAP_CLIP };
+	static uint8_t cap_kind = CAP_NONE;
+	static char cap_buf[28];
+	static uint8_t cap_len = 0;
+
+	if (cap_kind != CAP_NONE) {
 		if (c == '\r' || c == '\n') {
-			ucs_buf[ucs_len] = '\0';
-			ucs_capturing = false;
-			int st = parse_ucallstat_stat(ucs_buf);
-			if (st >= 0) {
-				urc_pending_stat = st;
-				if (st == 6)
-					urc_pending_call_ended = true;
+			cap_buf[cap_len] = '\0';
+			if (cap_kind == CAP_UCALLSTAT) {
+				int st = parse_ucallstat_stat(cap_buf);
+				if (st >= 0) {
+					urc_pending_stat = st;
+					if (st == 6)
+						urc_pending_call_ended = true;
+				}
+			} else {
+				parse_clip_number(cap_buf);
 			}
-			ucs_len = 0;
-		} else if (ucs_len + 1 < sizeof(ucs_buf)) {
-			ucs_buf[ucs_len++] = c;
+			cap_kind = CAP_NONE;
+			cap_len = 0;
+		} else if (cap_len + 1 < sizeof(cap_buf)) {
+			cap_buf[cap_len++] = c;
 		}
 		return;
 	}
@@ -655,14 +852,27 @@ static void lara_urc_on_byte(char c)
 	    || lara_pat_advance(ring_pat_n, &ring_n_i, c)) {
 		urc_pending_ringing = true;
 		urc_pending_last_ring = millis();
+		/*
+		 * Each RING is followed by its own +CLIP in the same burst, so
+		 * dropping the stored number here and letting that +CLIP put it
+		 * back keeps the number tied to the call now ringing. Without
+		 * this, a withheld caller arriving after an identified one
+		 * sends no +CLIP, and the previous caller's number would be
+		 * displayed as the identity of the new one.
+		 */
+		lara_clip_number[0] = '\0';
 	}
 	if (lara_pat_advance(nocarr_r, &noc_r_i, c)
 	    || lara_pat_advance(nocarr_n, &noc_n_i, c)) {
 		urc_pending_call_ended = true;
 	}
 	if (lara_pat_advance(ucs_pat, &ucs_i, c)) {
-		ucs_capturing = true;
-		ucs_len = 0;
+		cap_kind = CAP_UCALLSTAT;
+		cap_len = 0;
+	}
+	if (lara_pat_advance(clip_pat, &clip_i, c)) {
+		cap_kind = CAP_CLIP;
+		cap_len = 0;
 	}
 }
 
