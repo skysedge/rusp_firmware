@@ -444,6 +444,21 @@ int lara_at_set(const char *command, unsigned long timeout)
 }
 
 
+/**
+ * Is the module answering AT yet? Silence is not reported as a failure.
+ *
+ * Both callers probe a module that is expected not to answer — one that may
+ * still be powered off, and one part-way through a reboot. Routing those
+ * through lara_at_set() printed a failure line for every unanswered attempt,
+ * so a provisioning boot that was working correctly reported nine
+ * consecutive timeouts before saying "ready".
+ */
+static bool lara_answers_at(unsigned long timeout_ms)
+{
+	return lara_at("", nullptr, nullptr, 0, timeout_ms) == LARA_RC_OK;
+}
+
+
 /* Wait for an unsolicited line starting with prefix. True if it arrived. */
 static bool lara_wait_line(const char *prefix, unsigned long timeout_ms)
 {
@@ -509,8 +524,8 @@ int lara_on(
 	bool already_on = digitalRead(CELL_PWR_DET) == HIGH;
 	bool pulsed = false;
 	if (!already_on) {
-		/* Short AT probe — ignore errors; success means skip pulse. */
-		if (lara_at_set("", 400) == 0) {
+		/* Short AT probe — silence is expected; success means skip pulse. */
+		if (lara_answers_at(400)) {
 			already_on = true;
 			lara.cons->println(
 				F("LARA: AT ok with PWR_DET low (skip pulse)")
@@ -695,7 +710,7 @@ static int lara_set_mno_profile(void)
 	unsigned long deadline = millis() + LARA_REBOOT_TIMEOUT_MS;
 	while (millis() < deadline) {
 		delay(500);
-		if (lara_at_set("", 400) == 0)
+		if (lara_answers_at(400))
 			return 0;
 	}
 	lara.cons->println(F("LARA: module did not return after reboot"));
