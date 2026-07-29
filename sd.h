@@ -40,6 +40,23 @@ struct sd_state {
 void sd_init(HardwareSerial *cons);
 void sd_info();
 void sd_read_all();
+/* True if the card initialized successfully at boot. */
+bool sd_is_ready();
+/*
+ * After EPD (or other SPI masters) finish: deselect CS lines and re-begin
+ * the SD library so sd cat / append work again.
+ */
+void sd_recover_spi(void);
+/* Append one line to DIAL.LOG (creates the file if needed). */
+bool sd_log_append(const char *line);
+/* Append one line to PINS.LOG (USB/charge pin-scan capture). */
+bool sd_pins_log_append(const char *line);
+/*
+ * Handle a console line that starts with "sd".
+ * Commands: sd help | sd ls | sd cat <FILE>
+ * Returns true if the line was an SD command (caller should not forward to modem).
+ */
+bool sd_handle_serial_command(HardwareSerial *cons, const char *line);
 
 #define X(name) char *sd_##name();
 CONFIG_FILES
