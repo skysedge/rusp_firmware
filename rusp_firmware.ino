@@ -3,7 +3,7 @@
 #include <SPI.h>
 
 // Firmware version
-#define FIRMWARE_VERSION "1.2.5"
+#define FIRMWARE_VERSION "1.2.6"
 
 /*
  * When 1: ignore local / address-book (ALT) switch for dialing.
@@ -1957,13 +1957,24 @@ void loop()
 			filament_led_state = false;
 		}
 
-		// Physical ringer
-		if (t & 0b00100000) {
-			digitalWrite(RINGER_P, HIGH);
-			digitalWrite(RINGER_N, LOW);
+		/*
+		 * Physical ringer — same ON/OFF cadence as the LEDs
+		 * (tools/pulse_monitor/ringer_drive.py). Driving the H-bridge for
+		 * the whole alert window (including the 2 s pause) browned out the
+		 * rail on the first incoming RING and reset the MCU. Break-before-
+		 * make: never leave both legs HIGH across a polarity flip.
+		 */
+		if (should_pulse) {
+			if (t & 0b00100000) {
+				digitalWrite(RINGER_N, LOW);
+				digitalWrite(RINGER_P, HIGH);
+			} else {
+				digitalWrite(RINGER_P, LOW);
+				digitalWrite(RINGER_N, HIGH);
+			}
 		} else {
 			digitalWrite(RINGER_P, LOW);
-			digitalWrite(RINGER_N, HIGH);
+			digitalWrite(RINGER_N, LOW);
 		}
 	} else {
 		digitalWrite(RINGER_P, LOW);
